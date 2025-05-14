@@ -69,7 +69,7 @@ function BlockedLS(
   else
       xtx = X'X
       xtxblk = BlockedArray(xtx, blocksizes, blocksizes)
-      Dblk = [xtxblk[Block(b)] for b in 1:nblocks]
+      Dblk = [xtxblk[Block(b, b)] for b in 1:nblocks]
   end
   xty = X'y
   # parameter
