@@ -194,7 +194,7 @@ struct GramMinusBlkDiag{T,gpdT,bdhT,vecT} <: AbstractMatrix{T}
   tmp::vecT
 end
 
-function GramMinusBlkDiag(A::AbstractMatrix{T}, D::BlkDiagHessian{T}) where T
+function GramMinusBlkDiag(A::AbstractMatrix{T}, D::AbstractMatrix{T}) where T
   AtA = GramPlusDiag(A)
   tmp = zeros(size(AtA, 1))
   gpdT = typeof(AtA)
@@ -232,7 +232,7 @@ function estimate_dominant_eigval(A, D; kwargs...)
   return lambda_max
 end
 
-function init!(::Type{T}, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm) where T
+function initblocks!(::Type{T}, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm) where T
   # Compute blocks along diagonal, Dₖ = Dₖₖ = AₖᵀAₖ + λI and extract their Cholesky decompositions
   if use_qlb
     D = BlkDiagHessian(A, n_blk; alpha=1, beta=lambda, factor=false)
@@ -244,9 +244,33 @@ function init!(::Type{T}, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm) where
 
   # Initialize the difference, d₁ = x₁ - x₀
   r = copy(b)
-  mul!(r, A, x, -1.0, 1.0) # r = b - A⋅x
-  mul!(g, transpose(A), r) # ∇ = -Aᵀ⋅r
-  !iszero(lambda) && axpy!(lambda, x, g)
+  mul!(r, A, x, -one(T), one(T))  # r = b - A⋅x
+  mul!(g, transpose(A), r)        # -∇ = Aᵀ⋅r - λx)
+  !iszero(lambda) && axpy!(-T(lambda), x, g)
+
+  ldiv!(d, D, g)
+  @. x = x + d
+
+  return r, D
+end
+
+function initdiag!(::Type{T}, d, x, g, A, b, lambda, use_qlb, tol_powm) where T
+  diag = zeros(T, size(A, 2))
+  for k in axes(A, 2)
+    @views diag[k] = dot(A[:, k], A[:, k]) + lambda
+  end
+  D = Diagonal(diag)
+
+  if use_qlb
+    lambda_max = estimate_dominant_eigval(A, D, maxiter=3)#tol = tol_powm)
+    @. D.diag += lambda_max
+  end
+
+  # Initialize the difference, d₁ = x₁ - x₀
+  r = copy(b)
+  mul!(r, A, x, -one(T), one(T))  # r = b - A⋅x
+  mul!(g, transpose(A), r)        # -∇ = Aᵀ⋅r - λx)
+  !iszero(lambda) && axpy!(-T(lambda), x, g)
 
   ldiv!(d, D, g)
   @. x = x + d
@@ -260,10 +284,7 @@ end
 
 function solve_OLS(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   lambda::Float64 = 0.0,
-  maxiter::Int = 100,
-  gtol::Float64 = 1e-3,
-  use_qlb::Bool = false,
-  tol_powm::Float64 = T(minimum(size(A)))
+  kwargs...
 ) where T
   #
   n_obs, n_var = size(A)
@@ -273,11 +294,28 @@ function solve_OLS(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   @assert var_per_blk > 0
   @assert lambda >= 0
 
+  if var_per_blk > 1
+    _solve_OLS_blkdiag(A, b, x0, n_blk; lambda=lambda, kwargs...)
+  else
+    _solve_OLS_diag(A, b, x0, n_blk; lambda=lambda, kwargs...)
+  end
+end
+
+function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+  lambda::Float64 = 0.0,
+  maxiter::Int = 100,
+  gtol::Float64 = 1e-3,
+  use_qlb::Bool = false,
+  tol_powm::Float64 = T(minimum(size(A)))
+) where T
+  #
+  n_obs, n_var = size(A)
+
   # Main matrices and vectors
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
-  r, D = init!(T, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm)
+  r, D = initblocks!(T, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm)
   AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
 
   # Iterate the algorithm map
@@ -296,7 +334,60 @@ function solve_OLS(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
     @. x = x + d
 
     # Update gradient
-    mul!(g, D, d)
+    mul!(g, D, d) # -∇
+
+    converged = norm(g) <= gtol
+  end
+
+  # final residual
+  copyto!(r, b)
+  mul!(r, A, x, -1.0, 1.0)
+
+  stats = (
+    iterations = iter,
+    converged = converged,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
+function _solve_OLS_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+  lambda::Float64 = 0.0,
+  maxiter::Int = 100,
+  gtol::Float64 = 1e-3,
+  use_qlb::Bool = false,
+  tol_powm::Float64 = T(minimum(size(A)))
+) where T
+  #
+  n_obs, n_var = size(A)
+
+  # Main matrices and vectors
+  x = deepcopy(x0)
+  d = zeros(n_var)
+  g = zeros(n_var)
+  r, D = initdiag!(T, d, x, g, A, b, lambda, use_qlb, tol_powm)
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+
+  # Iterate the algorithm map
+  iter = 0
+  converged = false
+
+  while !converged && (iter < maxiter)
+    iter += 1
+
+    # Update difference dₙ₊₁ = [I - D⁻¹(AᵀA+λI)] dₙ
+    mul!(g, AtApI, d)
+    ldiv!(D, g)
+    @. d = d - g
+
+    # Update coefficients
+    @. x = x + d
+
+    # Update gradient
+    mul!(g, D, d) # -∇
 
     converged = norm(g) <= gtol
   end
@@ -334,7 +425,7 @@ function solve_OLS_lsmr(A, b;
   r = copy(b)
   mul!(r, A, x, -one(T), one(T))
   g = copy(x)
-  mul!(g, transpose(A), r, -one(T), lambda)
+  mul!(g, transpose(A), r, one(T), -lambda) # -∇ = Aᵀr - λx
   
   stats = (
     iterations = ch.iters,
