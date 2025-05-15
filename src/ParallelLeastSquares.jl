@@ -194,8 +194,7 @@ struct GramMinusBlkDiag{T,gpdT,bdhT,vecT} <: AbstractMatrix{T}
   tmp::vecT
 end
 
-function GramMinusBlkDiag(A::AbstractMatrix{T}, D::AbstractMatrix{T}) where T
-  AtA = GramPlusDiag(A)
+function GramMinusBlkDiag(AtA::AbstractMatrix{T}, D::AbstractMatrix{T}) where T
   tmp = zeros(size(AtA, 1))
   gpdT = typeof(AtA)
   bdhT = typeof(D)
@@ -226,17 +225,18 @@ end
 ### Initialization
 ###
 
-function estimate_dominant_eigval(A, D; kwargs...)
-  lambda_max, _, ch = powm!(GramMinusBlkDiag(A, D), ones(size(D, 1)); log=true, kwargs...)
+function estimate_dominant_eigval(AtA, D; kwargs...)
+  lambda_max, _, ch = powm!(GramMinusBlkDiag(AtA, D), ones(size(D, 1)); log=true, kwargs...)
   # @show ch
   return lambda_max
 end
 
-function initblocks!(::Type{T}, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm) where T
+function initblocks!(::Type{T}, d, x, g, linmap, b, n_blk, lambda, use_qlb, tol_powm) where T
+  A, AtA = linmap.A, linmap.AtA
   # Compute blocks along diagonal, Dₖ = Dₖₖ = AₖᵀAₖ + λI and extract their Cholesky decompositions
   if use_qlb
     D = BlkDiagHessian(A, n_blk; alpha=1, beta=lambda, factor=false)
-    lambda_max = estimate_dominant_eigval(A, D, maxiter=3)#tol = tol_powm)
+    lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)#tol = tol_powm)
     D = update_factors!(D, 1, lambda + lambda_max)
   else
     D = BlkDiagHessian(A, n_blk; alpha=n_blk, beta=lambda, factor=true)
@@ -254,15 +254,21 @@ function initblocks!(::Type{T}, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm)
   return r, D
 end
 
-function initdiag!(::Type{T}, d, x, g, A, b, lambda, use_qlb, tol_powm) where T
-  diag = zeros(T, size(A, 2))
-  for k in axes(A, 2)
-    @views diag[k] = dot(A[:, k], A[:, k]) + lambda
+function initdiag!(::Type{T}, d, x, g, linmap, b, lambda, use_qlb, tol_powm) where T
+  A, AtA = linmap.A, linmap.AtA
+  if size(AtA, 1) == 0
+    diag = zeros(T, size(A, 2))
+    for k in axes(A, 2)
+      @views diag[k] = dot(A[:, k], A[:, k]) + lambda
+    end
+  else
+    diag = AtA[diagind(AtA)]
+    @. diag += lambda 
   end
   D = Diagonal(diag)
 
   if use_qlb
-    lambda_max = estimate_dominant_eigval(A, D, maxiter=3)#tol = tol_powm)
+    lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)#tol = tol_powm)
     @. D.diag += lambda_max
   end
 
@@ -315,8 +321,8 @@ function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
-  r, D = initblocks!(T, d, x, g, A, b, n_blk, lambda, use_qlb, tol_powm)
   AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+  r, D = initblocks!(T, d, x, g, AtApI, b, n_blk, lambda, use_qlb, tol_powm)
 
   # Iterate the algorithm map
   iter = 0
@@ -368,8 +374,8 @@ function _solve_OLS_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
-  r, D = initdiag!(T, d, x, g, A, b, lambda, use_qlb, tol_powm)
   AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+  r, D = initdiag!(T, d, x, g, AtApI, b, lambda, use_qlb, tol_powm)
 
   # Iterate the algorithm map
   iter = 0

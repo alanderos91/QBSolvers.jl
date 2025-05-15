@@ -18,6 +18,7 @@ using LinearAlgebra, Statistics, Random
 using BenchmarkTools, DataFrames, PrettyTables
 
 BLAS.set_num_threads(10)
+ParallelLeastSquares.BLAS_THREADS[] = BLAS.get_num_threads()
 
 Pkg.status(); println()
 versioninfo(); println()
