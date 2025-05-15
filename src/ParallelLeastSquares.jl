@@ -245,11 +245,11 @@ function initblocks!(::Type{T}, d, x, g, linmap, b, n_blk, lambda, use_qlb, tol_
   # Initialize the difference, d₁ = x₁ - x₀
   r = copy(b)
   mul!(r, A, x, -one(T), one(T))  # r = b - A⋅x
-  mul!(g, transpose(A), r)        # -∇ = Aᵀ⋅r - λx)
+  mul!(g, transpose(A), r)        # -∇ = Aᵀ⋅r - λx
   !iszero(lambda) && axpy!(-T(lambda), x, g)
 
-  ldiv!(d, D, g)
-  @. x = x + d
+  ldiv!(d, D, g) # d₁ = D⁻¹(-∇₀)
+  @. x = x + d   # x₁ = x₀ + d₁
 
   return r, D
 end
@@ -275,11 +275,11 @@ function initdiag!(::Type{T}, d, x, g, linmap, b, lambda, use_qlb, tol_powm) whe
   # Initialize the difference, d₁ = x₁ - x₀
   r = copy(b)
   mul!(r, A, x, -one(T), one(T))  # r = b - A⋅x
-  mul!(g, transpose(A), r)        # -∇ = Aᵀ⋅r - λx)
+  mul!(g, transpose(A), r)        # -∇₀ = Aᵀ⋅r - λx
   !iszero(lambda) && axpy!(-T(lambda), x, g)
 
-  ldiv!(d, D, g)
-  @. x = x + d
+  ldiv!(d, D, g) # d₁ = D⁻¹(-∇₀)
+  @. x = x + d   # x₁ = x₀ + d₁
 
   return r, D
 end
@@ -321,27 +321,31 @@ function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
+  tmp = zeros(n_var)
   AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
   r, D = initblocks!(T, d, x, g, AtApI, b, n_blk, lambda, use_qlb, tol_powm)
 
+# Current negative gradient, -∇₁
+  mul!(tmp, AtApI, d) # (AᵀA+λI) d₁
+  @. g = g - tmp      # -∇₁ = -∇₀ - (AᵀA+λI) d₁
+
   # Iterate the algorithm map
-  iter = 0
-  converged = false
+  iter = 1
+  converged = norm(g) <= gtol
 
   while !converged && (iter < maxiter)
     iter += 1
 
     # Update difference dₙ₊₁ = [I - D⁻¹(AᵀA+λI)] dₙ
-    mul!(g, AtApI, d)
-    ldiv!(D, g)
-    @. d = d - g
+    ldiv!(D, tmp)
+    @. d = d - tmp
 
     # Update coefficients
     @. x = x + d
 
-    # Update gradient
-    mul!(g, D, d) # -∇
-
+    # Compute (AᵀA+λI) dₙ₊₁ and -∇ₙ₊₁
+    mul!(tmp, AtApI, d)
+    @. g = g - tmp      # assumes g is always -∇
     converged = norm(g) <= gtol
   end
 
@@ -374,27 +378,31 @@ function _solve_OLS_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
+  tmp = zeros(n_var)
   AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
   r, D = initdiag!(T, d, x, g, AtApI, b, lambda, use_qlb, tol_powm)
 
+  # Current negative gradient, -∇₁
+  mul!(tmp, AtApI, d) # (AᵀA+λI) d₁
+  @. g = g - tmp      # -∇₁ = -∇₀ - (AᵀA+λI) d₁
+
   # Iterate the algorithm map
-  iter = 0
-  converged = false
+  iter = 1
+  converged = norm(g) <= gtol
 
   while !converged && (iter < maxiter)
     iter += 1
 
     # Update difference dₙ₊₁ = [I - D⁻¹(AᵀA+λI)] dₙ
-    mul!(g, AtApI, d)
-    ldiv!(D, g)
-    @. d = d - g
+    ldiv!(D, tmp)
+    @. d = d - tmp
 
     # Update coefficients
     @. x = x + d
 
-    # Update gradient
-    mul!(g, D, d) # -∇
-
+    # Compute (AᵀA+λI) dₙ₊₁ and -∇ₙ₊₁
+    mul!(tmp, AtApI, d)
+    @. g = g - tmp      # assumes g is always -∇
     converged = norm(g) <= gtol
   end
 
