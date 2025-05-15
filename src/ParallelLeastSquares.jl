@@ -452,7 +452,56 @@ function solve_OLS_lsmr(A, b;
   return x, r, stats
 end
 
+function solve_OLS_cg(A, b;
+  x0 = IterativeSolvers.zerox(A, b),
+  lambda::Real=0.0,
+  use_qlb=false,
+  kwargs...  
+)
+  #
+  lambda >= 0 || error("Regularization λ must be non-negative. Got: $(lambda)")
+  T = eltype(A)
+
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+
+  if use_qlb # precondition with QLB matrix
+    AtA = AtApI.AtA
+    if size(AtA, 1) == 0
+      diag = zeros(T, size(A, 2))
+      for k in axes(A, 2)
+        @views diag[k] = dot(A[:, k], A[:, k]) + lambda
+      end
+    else
+      diag = AtA[diagind(AtA)]
+      @. diag += lambda 
+    end
+    D = Diagonal(diag)
+    
+    lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
+    @. D.diag += lambda_max
+
+    x, ch = cg!(x0, AtApI, transpose(A)*b; Pl=D, log=true, kwargs...)
+  else
+    x, ch = cg!(x0, AtApI, transpose(A)*b; log=true, kwargs...)
+  end
+
+  r = copy(b)
+  mul!(r, A, x, -one(T), one(T))
+  g = copy(x)
+  mul!(g, transpose(A), r, one(T), -lambda) # -∇ = Aᵀr - λx
+  
+  stats = (
+    iterations = ch.iters,
+    converged = ch.isconverged,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
 export GramPlusDiag, BlkDiagHessian, GramMinusBlkDiag
-export solve_OLS, solve_OLS_lsmr
+export solve_OLS, solve_OLS_lsmr, solve_OLS_cg
 
 end # module

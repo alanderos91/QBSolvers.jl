@@ -25,10 +25,10 @@ versioninfo(); println()
 BLAS.get_config() |> display; println()
 
 function main(n, p, λ, seed)
-  @assert n > p
+  iszero(λ) && @assert n > p
   @assert p > 2^7
 
-  N = 100 # number of @benchmark samples
+  N = 1000 # number of @benchmark samples
   Random.seed!(seed)
   maxiter = 10^4
   use_qlb = true
@@ -53,7 +53,8 @@ function main(n, p, λ, seed)
   b = A*x + 1/p .* randn(n)
   x0 = zeros(p)
 
-  xLSMR, rLSMR, statsLSMR = solve_OLS_lsmr(A, b; lambda=λ)
+  # LSMR
+  _, _, statsLSMR = solve_OLS_lsmr(A, b; lambda=λ)
   benchLSMR = @benchmark solve_OLS_lsmr($A, $b; lambda=$λ) samples=N
   push!(results,
     (Threads.nthreads(), n, p, λ, 1, p, "LSMR",
@@ -62,6 +63,27 @@ function main(n, p, λ, seed)
     )
   )
   gnormLSMR = statsLSMR.gnorm
+  cgtol = gnormLSMR^2
+
+  # CG
+  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=false)
+  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=false)
+  push!(results,
+    (Threads.nthreads(), n, p, λ, 1, p, "CG",
+      median(benchCG.times) * 1e-6, statsCG.iterations,
+      statsCG.xnorm, statsCG.rnorm, statsCG.gnorm,
+    )
+  )
+
+  # CG with QLB preconditioner
+  _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=true)
+  benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=true)
+  push!(results,
+    (Threads.nthreads(), n, p, λ, 1, p, "PCG",
+      median(benchPCG.times) * 1e-6, statsPCG.iterations,
+      statsPCG.xnorm, statsPCG.rnorm, statsPCG.gnorm,
+    )
+  )
 
   for var_per_blk in (2^k for k in 0:8)
     n_blk = fld(p, var_per_blk)
@@ -77,7 +99,7 @@ function main(n, p, λ, seed)
     )
   end
 
-  fmt_time = ft_printf("%5.2f", findfirst(==("time"), names(results)))
+  fmt_time = ft_printf("%5.0f", findfirst(==("time"), names(results)))
   fmt_norm = ft_latex_sn(4, findfirst(==("xnorm"), names(results)) .+ (0:2))
 
   # for human readability
