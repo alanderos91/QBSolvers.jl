@@ -22,4 +22,7 @@ include("utilities.jl")
 include("leastsquares.jl")
 export solve_OLS, solve_OLS_lsmr, solve_OLS_cg
 
+include("quantilereg.jl")
+export solve_QREG
+
 end # module
