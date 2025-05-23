@@ -20,6 +20,32 @@ function prox_abs!(z::AbstractVector{T}, r::AbstractVector{T}, h::T) where T
   return z
 end
 
+# check function
+function qreg_loss(r::T, q::T) where T <: Real
+  return (q-1//2)*r + 1//2*abs(r)
+end
+
+function qreg_objective(r, q)
+  let r = r, q = q
+    f(r) = qreg_loss(r, q)
+    mapreduce(f, +, r) / length(r)
+  end
+end
+
+# Uniform kernel
+function qreg_loss_uniform(r::T, q::T, h::T) where T <: Real
+  absr = abs(r)
+  C = ifelse(absr > h, absr, h/2 * (1 + (r/h)^2))
+  return (q-1//2)*r + 1//2*C
+end
+
+function qreg_objective_uniform(r, q, h)
+  let r =r, q = q, h = h
+    f(r) = qreg_loss_uniform(r, q, h)
+    mapreduce(f, +, r) / length(r)
+  end
+end
+
 ###
 ### Implementation
 ###
