@@ -19,13 +19,19 @@ struct BlkDiagHessian{T,matT,blkmatT,gpdT} <: AbstractMatrix{T}
   beta::T
 end
 
-function BlkDiagHessian(A::Matrix{T}, n_blk::Int; alpha::Real=one(T), beta::Real=zero(T), factor::Bool=true) where T
+function BlkDiagHessian(A::Matrix{T}, n_blk::Int;
+  alpha::Real   = one(T),
+  beta::Real    = zero(T),
+  factor::Bool  = true,
+  gram::Bool    = false,
+) where T
+  #
   n_obs, n_var = size(A)
   var_per_blk = cld(n_var, n_blk)
   A_blk = BlockedArray(A, [n_obs], repeat([var_per_blk], n_blk))
 
   A_11 = view(A_blk, Block(1))
-  D_11 = GramPlusDiag(A_11; alpha=alpha, beta=beta)
+  D_11 = GramPlusDiag(A_11; alpha=alpha, beta=beta, gram=gram)
   diag = Vector{typeof(D_11)}(undef, n_blk)
   chol = Vector{Cholesky{T,Matrix{T}}}(undef, n_blk)
 
@@ -36,9 +42,47 @@ function BlkDiagHessian(A::Matrix{T}, n_blk::Int; alpha::Real=one(T), beta::Real
 
   for k in 2:n_blk
     A_kk = view(A_blk, Block(k))
-    diag[k] = GramPlusDiag(A_kk; alpha=alpha, beta=beta)
+    diag[k] = GramPlusDiag(A_kk; alpha=alpha, beta=beta, gram=gram)
     if factor
       chol[k] = cholesky!(Symmetric(form_AtApI(A_kk, alpha, beta), :L))
+    end
+  end
+
+  return BlkDiagHessian(A, n_obs, n_var, n_blk, A_blk, diag, chol, T(alpha), T(beta))
+end
+
+function BlkDiagHessian(AtApI::GramPlusDiag{T}, n_blk::Int;
+  alpha::Real   = one(T),
+  beta::Real    = zero(T),
+  factor::Bool  = true,
+) where T
+  #
+  A, AtA = AtApI.A, AtApI.AtA
+  @assert size(AtA, 1) > 0 # raise an error if we never cached the full AtA
+
+  n_obs, n_var = size(A)
+  var_per_blk = cld(n_var, n_blk)
+  blocksizes = repeat([var_per_blk], n_blk)
+  A_blk = BlockedArray(A, [n_obs], blocksizes)
+  AtA_blk = BlockedArray(AtA, blocksizes, blocksizes)
+
+  A_1  = view(A_blk, Block(1))
+  A_11 = view(AtA_blk, Block(1), Block(1))
+  D_11 = GramPlusDiag(A_1, copy(A_11), n_obs, size(A_1, 2), similar(A, 0), T(alpha), T(beta))
+  diag = Vector{typeof(D_11)}(undef, n_blk)
+  chol = Vector{Cholesky{T,Matrix{T}}}(undef, n_blk)
+
+  diag[1] = D_11
+  if factor
+    chol[1] = cholesky!(Symmetric(copy(A_11), :L))
+  end
+
+  for k in 2:n_blk
+    A_k  = view(A_blk, Block(k))
+    A_kk = view(AtA_blk, Block(k), Block(k))
+    diag[k] = GramPlusDiag(A_k, copy(A_kk), n_obs, size(A_k, 2), similar(A, 0), T(alpha), T(beta))
+    if factor
+      chol[k] = cholesky!(Symmetric(copy(A_kk), :L))
     end
   end
 

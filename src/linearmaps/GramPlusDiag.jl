@@ -14,9 +14,14 @@ struct GramPlusDiag{T,matT1,matT2,vecT} <: AbstractMatrix{T}
   beta::T
 end
 
-function GramPlusDiag(A::AbstractMatrix{T}; alpha::Real=one(T), beta::Real=zero(T)) where T
+function GramPlusDiag(A::AbstractMatrix{T};
+  alpha::Real = one(T),
+  beta::Real  = zero(T),
+  gram::Bool  = false
+) where T
+  #
   n_obs, n_var = size(A)
-  if n_obs > n_var
+  if gram
     AtA = transpose(A) * A
     tmp = similar(A, 0)
   else
@@ -42,7 +47,7 @@ Base.size(gpd::GramPlusDiag) = (gpd.n_var, gpd.n_var)
 Base.eltype(::GramPlusDiag{T}) where T = T
 
 function LinearAlgebra.mul!(y::AbstractVector, gpd::GramPlusDiag, x::AbstractVector)
-  if gpd.n_obs > gpd.n_var
+  if size(gpd.AtA, 1) > 0
     mul!(y, Symmetric(gpd.AtA), x)
   else
     mul!(gpd.tmp, gpd.A, x)

@@ -4,13 +4,23 @@
 
 function initblocks!(::Type{T}, d, x, g, linmap, b, n_blk, lambda, use_qlb, tol_powm) where T
   A, AtA = linmap.A, linmap.AtA
+  n_obs, n_var = size(A)
+  var_per_blk = cld(n_var, n_blk)
   # Compute blocks along diagonal, Dₖ = Dₖₖ = AₖᵀAₖ + λI and extract their Cholesky decompositions
   if use_qlb
-    D = BlkDiagHessian(A, n_blk; alpha=1, beta=lambda, factor=false)
+    if size(AtA, 1) > 0
+      D = BlkDiagHessian(linmap, n_blk; alpha=1, beta=lambda, factor=false)
+    else
+      D = BlkDiagHessian(A, n_blk; alpha=1, beta=lambda, factor=false, gram=n_obs >= var_per_blk)
+    end
     lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)#tol = tol_powm)
     D = update_factors!(D, 1, lambda + lambda_max)
   else
-    D = BlkDiagHessian(A, n_blk; alpha=n_blk, beta=lambda, factor=true)
+    if size(AtA, 1) > 0
+      D = BlkDiagHessian(linmap, n_blk; alpha=n_blk, beta=lambda, factor=true)
+    else
+      D = BlkDiagHessian(A, n_blk; alpha=n_blk, beta=lambda, factor=true, gram=n_obs >= var_per_blk)
+    end
   end
 
   # Initialize the difference, d₁ = x₁ - x₀
@@ -83,7 +93,8 @@ function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   maxiter::Int = 100,
   gtol::Float64 = 1e-3,
   use_qlb::Bool = false,
-  tol_powm::Float64 = T(minimum(size(A)))
+  tol_powm::Float64 = T(minimum(size(A))),
+  gram::Bool = _cache_gram_heuristic_(A),
 ) where T
   #
   n_obs, n_var = size(A)
@@ -93,7 +104,7 @@ function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   d = zeros(n_var)
   g = zeros(n_var)
   tmp = zeros(n_var)
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda), gram=gram)
   r, D = initblocks!(T, d, x, g, AtApI, b, n_blk, lambda, use_qlb, tol_powm)
 
   # Current negative gradient, -∇₁
@@ -140,7 +151,8 @@ function _solve_OLS_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   maxiter::Int = 100,
   gtol::Float64 = 1e-3,
   use_qlb::Bool = false,
-  tol_powm::Float64 = T(minimum(size(A)))
+  tol_powm::Float64 = T(minimum(size(A))),
+  gram::Bool = _cache_gram_heuristic_(A),
 ) where T
   #
   n_obs, n_var = size(A)
@@ -150,7 +162,7 @@ function _solve_OLS_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   d = zeros(n_var)
   g = zeros(n_var)
   tmp = zeros(n_var)
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda), gram=gram)
   r, D = initdiag!(T, d, x, g, AtApI, b, lambda, use_qlb, tol_powm)
 
   # Current negative gradient, -∇₁
@@ -226,14 +238,15 @@ end
 function solve_OLS_cg(A, b;
   x0 = IterativeSolvers.zerox(A, b),
   lambda::Real=0.0,
-  use_qlb=false,
+  use_qlb::Bool=false,
+  gram::Bool = _cache_gram_heuristic_(A),
   kwargs...  
 )
   #
   lambda >= 0 || error("Regularization λ must be non-negative. Got: $(lambda)")
   T = eltype(A)
 
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda))
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda), gram=gram)
 
   if use_qlb # precondition with QLB matrix
     AtA = AtApI.AtA

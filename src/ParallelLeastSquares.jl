@@ -15,6 +15,9 @@ include(joinpath("linearmaps", "BlkDiagHessian.jl"))
 include(joinpath("linearmaps", "GramMinusBlkDiag.jl"))
 export GramPlusDiag, BlkDiagHessian, GramMinusBlkDiag
 
+# heuristics
+_cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)
+
 # Other helpful abstractions
 include("utilities.jl")
 

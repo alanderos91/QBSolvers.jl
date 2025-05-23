@@ -74,12 +74,13 @@ function _solve_QREG_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   h::Float64    = default_bandwidth(A),
   maxiter::Int  = 100,
   gtol::Float64 = 1e-3,
+  gram::Bool = _cache_gram_heuristic_(A),
 ) where T
   #
   n_obs, n_var = size(A)
 
   # Setup AᵀA and block diagonal D
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T))
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T), gram=gram)
   AtA = AtApI.AtA
 
   if size(AtA, 1) == 0
@@ -172,14 +173,20 @@ function _solve_QREG_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::I
   h::Float64    = default_bandwidth(A),
   maxiter::Int  = 100,
   gtol::Float64 = 1e-3,
+  gram::Bool = _cache_gram_heuristic_(A),
 ) where T
   #
   n_obs, n_var = size(A)
+  var_per_blk = cld(n_var, n_blk)
 
   # Setup AᵀA and block diagonal D
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T))
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T), gram=gram)
 
-  D = BlkDiagHessian(A, n_blk; alpha=one(T), beta=zero(T), factor=false)
+  if gram
+    D = BlkDiagHessian(AtApI, n_blk; alpha=one(T), beta=zero(T), factor=false)
+  else
+    D = BlkDiagHessian(A, n_blk; alpha=one(T), beta=zero(T), factor=false, gram=n_obs >= var_per_blk)
+  end
   lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
   D = update_factors!(D, one(T), T(lambda_max))
 
