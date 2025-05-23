@@ -3,7 +3,7 @@
 ###
 ### julia -t 1 QREG.jl 8192 2047 0.5 1903 > QREG_8192x2048_1903_q=0.5.out
 ###
-### NOTE: Number of variables, p, should be odd.
+### NOTE: Number of variables, p, should satisfy p = 2^k-1 for some positive integer k.
 ###
 
 using Pkg, InteractiveUtils
@@ -22,10 +22,6 @@ import MMDeweighting
 using RCall
 
 PLS = ParallelLeastSquares
-R"""
-library("conquer")
-"""
-
 
 BLAS.set_num_threads(10)
 ParallelLeastSquares.BLAS_THREADS[] = BLAS.get_num_threads()
@@ -33,6 +29,11 @@ ParallelLeastSquares.BLAS_THREADS[] = BLAS.get_num_threads()
 Pkg.status(); println()
 versioninfo(); println()
 BLAS.get_config() |> display; println()
+
+R"""
+library("conquer")
+sessionInfo()
+""" |> println
 
 function solve_QREG_conquer(_X, y, q, h)
   result = rcall(:conquer, X=_X, Y=y, tau=q, h=h, kernel="uniform") # default tol = 1e-04
@@ -121,7 +122,7 @@ function main(n, p, q, seed)
     )
   )
 
-  for var_per_blk in (2^k for k in 0:0)#Int(log2(p+1)))
+  for var_per_blk in (2^k for k in 0:Int(log2(p+1)))
     n_blk = fld(p+1, var_per_blk)
     β̂, _, stats = solve_QREG(X, y, β0, n_blk;
       q=q, h=h, maxiter=maxiter, gtol=gtol)

@@ -51,10 +51,8 @@ end
 ###
 
 function solve_QREG(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  q::Float64    = 0.5,
-  h::Float64    = default_bandwidth(A),
-  maxiter::Int  = 100,
-  gtol::Float64 = 1e-3,
+  q::Float64 = 0.5,
+  kwargs...
 ) where T
   #
   n_obs, n_var = size(A)
@@ -63,6 +61,22 @@ function solve_QREG(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   @assert rem(n_var, n_blk) == 0
   @assert var_per_blk > 0
   @assert 0 < q < 1
+
+  if var_per_blk > 1
+    _solve_QREG_blkdiag(A, b, x0, n_blk; q=q, kwargs...)
+  else
+    _solve_QREG_diag(A, b, x0, n_blk; q=q, kwargs...)
+  end
+end
+
+function _solve_QREG_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+  q::Float64    = 0.5,
+  h::Float64    = default_bandwidth(A),
+  maxiter::Int  = 100,
+  gtol::Float64 = 1e-3,
+) where T
+  #
+  n_obs, n_var = size(A)
 
   # Setup AᵀA and block diagonal D
   AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T))
@@ -80,6 +94,94 @@ function solve_QREG(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
 
   lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
   @. D.diag += lambda_max
+
+  # 
+  x = deepcopy(x0)
+  d = zeros(n_var)
+  g = zeros(n_var)
+  u = zeros(n_obs)
+  v = zeros(n_obs)
+  w = zeros(n_var)
+  z_new = zeros(n_obs)
+  z_old = zeros(n_obs)
+
+  # Initialize the difference, d₁ = x₁ - x₀ = D⁻¹ (-∇₀)
+  r = copy(b)                     # r₀ = b - Ax₀
+  mul!(r, A, x, -one(T), one(T))
+  prox_abs!(z_new, r, h)          # z₀ = prox[h|⋅|](r₀)
+  @. u = r - z_new                # -∇₀ = Aᵀ[r₀ - z₀ .+ (2q-1)h]
+  @. u = u + (2*q-1)*h
+  mul!(g, transpose(A), u, inv(T(2*h)), zero(T))
+  ldiv!(d, D, g)                  # d₁ = D⁻¹(-∇₀)
+  @. x = x + d                    # x₁ = x₀ + d₁
+
+  # Update recurrences to n = 1
+  mul!(u, A, d)               # r₁ = r₀ - A d₁
+  @. r = r - u
+  prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
+  @. v = u + z_old - z_new
+  mul!(w, transpose(A), v)    # Aᵀ(A d₁ + z₁ - z₀)
+  @. g = g - inv(T(2*h)) * w  # -∇₁ = -∇₀ - (2h)⁻¹Aᵀ(A d₁ + z₁ - z₀)
+
+  # Iterate the algorithm map
+  iter = 1
+  converged = norm(g) <= gtol
+
+  while !converged && (iter < maxiter)
+    iter += 1
+
+    # Compute dₙ₊₁ = dₙ - (2h)⁻¹D⁻¹ Aᵀ (A dₙ + zₙ - zₙ₋₁)
+    ldiv!(D, w)
+    @. d = d - inv(T(2*h)) * w
+
+    # Update coefficients
+    @. x = x + d
+
+    # Compute rₙ₊₁ = rₙ - A dₙ₊₁
+    mul!(u, A, d)
+    @. r = r - u
+
+    # Compute zₙ₊₁ = prox[h|⋅|](rₙ₊₁)
+    prox_abs!(z_new, r, h)
+
+    # Compute A dₙ₊₁ + zₙ₊₁ - zₙ
+    @. v = u + z_new - z_old
+
+    # Compute Aᵀ (A dₙ₊₁ + zₙ₊₁ - zₙ) and -∇ₙ₊₁
+    mul!(w, transpose(A), v)
+    @. g = g - inv(T(2*h)) * w  # assumes g is always -∇
+    converged = norm(g) <= gtol
+
+    # don't copy, swap'em
+    z_new, z_old = z_old, z_new
+  end
+
+  stats = (
+    iterations = iter,
+    converged = converged,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
+function _solve_QREG_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+  q::Float64    = 0.5,
+  h::Float64    = default_bandwidth(A),
+  maxiter::Int  = 100,
+  gtol::Float64 = 1e-3,
+) where T
+  #
+  n_obs, n_var = size(A)
+
+  # Setup AᵀA and block diagonal D
+  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T))
+
+  D = BlkDiagHessian(A, n_blk; alpha=one(T), beta=zero(T), factor=false)
+  lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
+  D = update_factors!(D, one(T), T(lambda_max))
 
   # 
   x = deepcopy(x0)
