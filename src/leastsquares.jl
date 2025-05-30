@@ -9,11 +9,11 @@ function initblocks!(::Type{T}, d, x, g, linmap, b, n_blk, lambda, use_qlb, tol_
   # Compute blocks along diagonal, Dₖ = Dₖₖ = AₖᵀAₖ + λI and extract their Cholesky decompositions
   if use_qlb
     if size(AtA, 1) > 0
-      D = BlkDiagHessian(linmap, n_blk; alpha=1, beta=lambda, factor=false)
+      D = BlkDiagHessian(linmap, n_blk; alpha=1, beta=0, factor=false)
     else
-      D = BlkDiagHessian(A, n_blk; alpha=1, beta=lambda, factor=false, gram=n_obs >= var_per_blk)
+      D = BlkDiagHessian(A, n_blk; alpha=1, beta=0, factor=false, gram=n_obs >= var_per_blk)
     end
-    lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)#tol = tol_powm)
+    lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)
     D = update_factors!(D, 1, lambda + lambda_max)
   else
     if size(AtA, 1) > 0
@@ -40,17 +40,16 @@ function initdiag!(::Type{T}, d, x, g, linmap, b, lambda, use_qlb, tol_powm) whe
   if size(AtA, 1) == 0
     diag = zeros(T, size(A, 2))
     for k in axes(A, 2)
-      @views diag[k] = dot(A[:, k], A[:, k]) + lambda
+      @views diag[k] = dot(A[:, k], A[:, k])
     end
   else
     diag = AtA[diagind(AtA)]
-    @. diag += lambda 
   end
   D = Diagonal(diag)
 
   if use_qlb
-    lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)#tol = tol_powm)
-    @. D.diag += lambda_max
+    lambda_max = estimate_dominant_eigval(GramPlusDiag(linmap, 1, 0), D, maxiter=3)
+    @. D.diag += lambda + lambda_max
   end
 
   # Initialize the difference, d₁ = x₁ - x₀
@@ -69,7 +68,7 @@ end
 ### Implementation
 ###
 
-function solve_OLS(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   lambda::Float64 = 0.0,
   kwargs...
 ) where T
@@ -88,7 +87,7 @@ function solve_OLS(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   end
 end
 
-function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+function _solve_OLS_blkdiag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   lambda::Float64 = 0.0,
   maxiter::Int = 100,
   gtol::Float64 = 1e-3,
@@ -146,7 +145,7 @@ function _solve_OLS_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   return x, r, stats
 end
 
-function _solve_OLS_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+function _solve_OLS_diag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   lambda::Float64 = 0.0,
   maxiter::Int = 100,
   gtol::Float64 = 1e-3,
@@ -253,16 +252,15 @@ function solve_OLS_cg(A, b;
     if size(AtA, 1) == 0
       diag = zeros(T, size(A, 2))
       for k in axes(A, 2)
-        @views diag[k] = dot(A[:, k], A[:, k]) + lambda
+        @views diag[k] = dot(A[:, k], A[:, k])
       end
     else
       diag = AtA[diagind(AtA)]
-      @. diag += lambda 
     end
     D = Diagonal(diag)
     
     lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
-    @. D.diag += lambda_max
+    @. D.diag += lambda + lambda_max
 
     x, ch = cg!(x0, AtApI, transpose(A)*b; Pl=D, log=true, kwargs...)
   else

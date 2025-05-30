@@ -50,7 +50,7 @@ end
 ### Implementation
 ###
 
-function solve_QREG(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   q::Float64 = 0.5,
   kwargs...
 ) where T
@@ -69,7 +69,7 @@ function solve_QREG(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   end
 end
 
-function _solve_QREG_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+function _solve_QREG_diag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   q::Float64    = 0.5,
   h::Float64    = default_bandwidth(A),
   maxiter::Int  = 100,
@@ -168,7 +168,7 @@ function _solve_QREG_diag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   return x, r, stats
 end
 
-function _solve_QREG_blkdiag(A::Matrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
+function _solve_QREG_blkdiag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   q::Float64    = 0.5,
   h::Float64    = default_bandwidth(A),
   maxiter::Int  = 100,
