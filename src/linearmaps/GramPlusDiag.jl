@@ -37,8 +37,12 @@ end
 
 function Base.getindex(gpd::GramPlusDiag, i, j)
   alpha, beta = gpd.alpha, gpd.beta
-  @views begin
-    alpha * dot(gpd.A[:,i], gpd.A[:,j]) + (i == j)*beta
+  if length(gpd.AtA) > 0
+    alpha * gpd.AtA[i,j] + (i == j)*beta
+  else
+    @views begin
+      alpha * dot(gpd.A[:,i], gpd.A[:,j]) + (i == j)*beta
+    end
   end
 end
 

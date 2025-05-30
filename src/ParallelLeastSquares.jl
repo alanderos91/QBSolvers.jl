@@ -1,11 +1,11 @@
 module ParallelLeastSquares
 
 using BlockArrays
-using LinearAlgebra
+using LinearAlgebra, Statistics
 using IterativeSolvers
 
-import Base: getindex, size, eltype
-import LinearAlgebra: issymmetric, mul!, ldiv!
+import Base: getindex, size, eltype, view
+import LinearAlgebra: issymmetric, mul!, ldiv!, *
 
 const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
 
@@ -13,7 +13,8 @@ const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
 include(joinpath("linearmaps", "GramPlusDiag.jl"))
 include(joinpath("linearmaps", "BlkDiagHessian.jl"))
 include(joinpath("linearmaps", "GramMinusBlkDiag.jl"))
-export GramPlusDiag, BlkDiagHessian, GramMinusBlkDiag
+include(joinpath("linearmaps", "NormalizedMatrix.jl"))
+export GramPlusDiag, BlkDiagHessian, GramMinusBlkDiag, NormalizedMatrix
 
 # heuristics
 _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)

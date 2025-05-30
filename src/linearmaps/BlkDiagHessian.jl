@@ -7,19 +7,19 @@
 ### |                        αAₘᵀAₘ+βI  |
 ###
 
-struct BlkDiagHessian{T,matT,blkmatT,gpdT} <: AbstractMatrix{T}
-  A::matT
+struct BlkDiagHessian{T,matT1,matT2,blkmatT,gpdT} <: AbstractMatrix{T}
+  A::matT1
   n_obs::Int
   n_var::Int
   n_blk::Int
   A_blk::blkmatT
   diag::Vector{gpdT}
-  chol::Vector{Cholesky{T,matT}}
+  chol::Vector{Cholesky{T,matT2}}
   alpha::T
   beta::T
 end
 
-function BlkDiagHessian(A::Matrix{T}, n_blk::Int;
+function BlkDiagHessian(A::AbstractMatrix{T}, n_blk::Int;
   alpha::Real   = one(T),
   beta::Real    = zero(T),
   factor::Bool  = true,
