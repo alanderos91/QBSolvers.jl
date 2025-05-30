@@ -3,7 +3,7 @@
 ###
 ### C = (A - 1āᵀ)S⁻¹
 ###
-### where C is a centered and scaled to be a correlation matrix.
+### so that CᵀC is a correlation matrix.
 ###
 
 struct NormalizedMatrix{T,matT,vecT1,vecT2} <: AbstractMatrix{T}
@@ -100,4 +100,44 @@ function form_AtApI!(AtApI::AbstractMatrix{T}, C::NormalizedMatrix{T}, alpha, be
     AtApI[diagind(AtApI)] .+= T(beta)
   end
   return AtApI
+end
+
+#
+# Extensions to GramPlusDiag
+#
+function GramPlusDiag(A_::NormalizedMatrix; kwargs...)
+  # do not compute AtA under normalization
+  gpd = GramPlusDiag(A; kwargs...)
+  # now pass to constructor using the possibly cached AtA
+  return GramPlusDiag(A_, gpg.AtA, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
+end
+
+function NormalizedGramPlusDiag(gpd::GramPlusDiag)
+  A_ = NormalizedMatrix(gpd.A)
+  return GramPlusDiag(A_, gpd.AtA, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
+end
+
+# make sure getindex works correctly when AtA is cached
+function _gpd_getindex_(::NormalizedMatrix, gpd)
+  n, S, u = gpd.n_obs, Diagonal(gpd.A.scale), gpd.A.shift
+  S[i,i] * (gpd.AtA[i,j] - n*u[i]*u[j]) * S[j,j]
+end
+
+# make sure mul! works correctly when AtA is cached
+function _gpd_mul_(::NormalizedMatrix, y, gpd, x)
+  n, S, u = gpd.n_obs, Diagonal(gpd.A.scale), gpd.A.shift
+  if size(gpd.AtA, 1) > 0
+    # AtA is not stored in normalized format; need to shift
+    @. y = x
+    ldiv!(S, y)
+    c = dot(u, y)
+    mul!(y, Symmetric(gpd.AtA), x)
+    @. y = y - n*c*u
+    ldiv!(S, y)
+  else
+    # mul! will handle shift and scale
+    mul!(gpd.tmp, gpd.A, x)
+    mul!(y, transpose(gpd.A), gpd.tmp)
+  end
+  return y
 end

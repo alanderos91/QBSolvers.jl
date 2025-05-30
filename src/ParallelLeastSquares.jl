@@ -14,7 +14,8 @@ include(joinpath("linearmaps", "GramPlusDiag.jl"))
 include(joinpath("linearmaps", "BlkDiagHessian.jl"))
 include(joinpath("linearmaps", "GramMinusBlkDiag.jl"))
 include(joinpath("linearmaps", "NormalizedMatrix.jl"))
-export GramPlusDiag, BlkDiagHessian, GramMinusBlkDiag, NormalizedMatrix
+include(joinpath("linearmaps", "BlkDiagPlusRank1.jl"))
+export GramPlusDiag, BlkDiagHessian, GramMinusBlkDiag, NormalizedMatrix, BlkDiagPlusRank1
 
 # heuristics
 _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)

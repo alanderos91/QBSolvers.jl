@@ -73,6 +73,7 @@ end
 function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   lambda::Float64 = 0.0,
   use_qlb::Bool = false,
+  normalize::Bool = false,
   gram::Bool = _cache_gram_heuristic_(A),
   kwargs...
 ) where T
@@ -84,14 +85,29 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
   @assert var_per_blk > 0
   @assert lambda >= 0
 
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda), gram=gram)
+  AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
+  AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
 
   if var_per_blk > 1
-    D_blkd = initblocks!(T, AtApI, lambda, use_qlb, n_blk)
-    _solve_OLS_loop(AtApI, D_blkd, b, x0, T(lambda); kwargs...)
+    if use_qlb && normalize
+      AtA0 = NormalizedGramPlusDiag(AtA)
+      D_blkd0 = initblocks!(T, AtA0, lambda, true, n_blk)
+      SDSpuuT = BlkDiagPlusRank1(A, D_blkd0)
+      _solve_OLS_loop(AtApI, SDSpuuT, b, x0, T(lambda); kwargs...)
+    else
+      D_blkd = initblocks!(T, AtA, lambda, use_qlb, n_blk)
+      _solve_OLS_loop(AtApI, D_blkd, b, x0, T(lambda); kwargs...)
+    end
   else
-    D_diag = initdiag!(T, AtApI, lambda, use_qlb)
-    _solve_OLS_loop(AtApI, D_diag, b, x0, T(lambda); kwargs...)
+    if use_qlb && normalize
+      AtA0 = NormalizedGramPlusDiag(AtA)
+      D_diag0 = initdiag!(T, AtA0, lambda, true)
+      SDSpuuT = BlkDiagPlusRank1(A, D_diag0)
+      _solve_OLS_loop(AtApI, SDSpuuT, b, x0, T(lambda); kwargs...)
+    else
+      D_diag = initdiag!(T, AtA, lambda, use_qlb)
+      _solve_OLS_loop(AtApI, D_diag, b, x0, T(lambda); kwargs...)
+    end
   end
 end
 
