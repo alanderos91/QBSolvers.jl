@@ -74,7 +74,7 @@ function BlkDiagHessian(AtApI::GramPlusDiag{T}, n_blk::Int;
 
   diag[1] = D_11
   if factor
-    chol[1] = cholesky!(Symmetric(copy(A_11), :L))
+    chol[1] = cholesky!(Symmetric(form_AtApI(A_1, alpha, beta), :L))
   end
 
   for k in 2:n_blk
@@ -82,7 +82,7 @@ function BlkDiagHessian(AtApI::GramPlusDiag{T}, n_blk::Int;
     A_kk = view(AtA_blk, Block(k), Block(k))
     diag[k] = GramPlusDiag(A_k, copy(A_kk), n_obs, size(A_k, 2), similar(A, 0), T(alpha), T(beta))
     if factor
-      chol[k] = cholesky!(Symmetric(copy(A_kk), :L))
+      chol[k] = cholesky!(Symmetric(form_AtApI(A_k, alpha, beta), :L))
     end
   end
 
