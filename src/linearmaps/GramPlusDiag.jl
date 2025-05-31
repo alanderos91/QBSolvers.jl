@@ -38,7 +38,7 @@ end
 function Base.getindex(gpd::GramPlusDiag, i, j)
   alpha, beta = gpd.alpha, gpd.beta
   if length(gpd.AtA) > 0
-    AtA_ij = _gpd_getindex(gpd.A, gpd)
+    AtA_ij = _gpd_getindex_(gpd.A, gpd, i, j)
     alpha * AtA_ij + (i == j)*beta
   else
     @views begin
@@ -47,7 +47,7 @@ function Base.getindex(gpd::GramPlusDiag, i, j)
   end
 end
 
-function _gpd_getindex_(::AbstractMatrix, gpd)
+function _gpd_getindex_(::AbstractMatrix, gpd, i, j)
   gpd.AtA[i,j]
 end
 
