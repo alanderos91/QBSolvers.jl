@@ -1,7 +1,7 @@
 ###
 ### Block Diagonal + Rank-1
 ###
-### H = S(D - n(S⁻¹x̄)(S⁻¹x̄)ᵀ)S = SDS - nx̄x̄ᵀ
+### H = S(D + n(S⁻¹x̄)(S⁻¹x̄)ᵀ)S = SDS + nx̄x̄ᵀ
 ###
 ### D is (block) diagonal with entries in X̂ᵀX̂+βI for some scalar β.
 ###   This should be a specialized type like Diagonal or BlkDiagHessian.
