@@ -1,12 +1,13 @@
 ###
 ### Gram plus Diagonal
 ###
-### αAᵀA+βI
+### αAᵀA+βD
 ###
 
-struct GramPlusDiag{T,matT1,matT2,vecT} <: AbstractMatrix{T}
+struct GramPlusDiag{T,matT1,matT2,matT3,vecT} <: AbstractMatrix{T}
   A::matT1
   AtA::matT2
+  D::matT3
   n_obs::Int
   n_var::Int
   tmp::vecT
@@ -14,7 +15,7 @@ struct GramPlusDiag{T,matT1,matT2,vecT} <: AbstractMatrix{T}
   beta::T
 end
 
-function GramPlusDiag(A::AbstractMatrix{T};
+function GramPlusDiag(A::AbstractMatrix{T}, D::Union{UniformScaling{T},Diagonal{T}} = one(T)*I;
   alpha::Real = one(T),
   beta::Real  = zero(T),
   gram::Bool  = false
@@ -28,21 +29,29 @@ function GramPlusDiag(A::AbstractMatrix{T};
     AtA = similar(A, 0, 0)
     tmp = similar(A, n_obs)
   end
-  return GramPlusDiag(A, AtA, n_obs, n_var, tmp, T(alpha), T(beta))
+  return GramPlusDiag(A, AtA, D, n_obs, n_var, tmp, T(alpha), T(beta))
 end
 
 function GramPlusDiag(gpd::GramPlusDiag{T}, alpha, beta) where T
-  return GramPlusDiag(gpd.A, gpd.AtA, gpd.n_obs, gpd.n_var, gpd.tmp, T(alpha), T(beta))
+  return GramPlusDiag(gpd.A, gpd.AtA, gpd.D, gpd.n_obs, gpd.n_var, gpd.tmp, T(alpha), T(beta))
+end
+
+function GramPlusDiag(gpd::GramPlusDiag, D::Diagonal)
+  return GramPlusDiag(gpd.A, gpd.AtA, D, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
+end
+
+function GramPlusDiag(gpd::GramPlusDiag, D::UniformScaling)
+  return GramPlusDiag(gpd.A, gpd.AtA, D, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
 end
 
 function Base.getindex(gpd::GramPlusDiag, i, j)
   alpha, beta = gpd.alpha, gpd.beta
   if length(gpd.AtA) > 0
     AtA_ij = _gpd_getindex_(gpd.A, gpd, i, j)
-    alpha * AtA_ij + (i == j)*beta
+    alpha * AtA_ij + beta * gpd.D[i,j]
   else
     @views begin
-      alpha * dot(gpd.A[:,i], gpd.A[:,j]) + (i == j)*beta
+      alpha * dot(gpd.A[:,i], gpd.A[:,j]) + beta * gpd.D[i,j]
     end
   end
 end
@@ -60,7 +69,8 @@ function LinearAlgebra.mul!(y::AbstractVector, gpd::GramPlusDiag, x::AbstractVec
   if iszero(gpd.beta)
     @. y = gpd.alpha * y
   else
-    axpby!(gpd.beta, x, gpd.alpha, y)
+    # α*AᵀAx + β*D*x
+    _gpd_mul_diag_(y, gpd.D, x, gpd.beta, gpd.alpha)
   end
   return y
 end
@@ -72,5 +82,17 @@ function _gpd_mul_(::AbstractMatrix, y, gpd, x)
     mul!(gpd.tmp, gpd.A, x)
     mul!(y, transpose(gpd.A), gpd.tmp)
   end
+  return y
+end
+
+function _gpd_mul_diag_(y, D::UniformScaling, x, alpha, beta)
+  T = eltype(y)
+  @. y = T(beta)*y + T(alpha*D.λ)*x
+  return y
+end
+
+function testmul(y, D::Diagonal, x, alpha, beta)
+  T = eltype(y)
+  @. y = T(beta)*y + T(alpha)*D.diag*x
   return y
 end

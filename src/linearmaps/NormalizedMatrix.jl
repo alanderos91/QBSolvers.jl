@@ -23,14 +23,12 @@ function NormalizedMatrix(A::AbstractMatrix{T};
   #
   n_obs, n_var = size(A)
   shift = similar(A, n_var); mean!(shift, transpose(A))
-  scale = similar(A, n_var); @. scale = 1
+  scale = similar(A, n_var)
   
   for j in axes(A, 2)
-    if !iszero(shift[j])
-      @views u .= A[:, j]
-      @. u = u - shift[j]
-      scale[j] = norm(u)
-    end
+    @views a = A[:, j]
+    s = sqrt(dot(a, a) - n_obs*shift[j]^2)
+    scale[j] = ifelse(iszero(s), one(T), s)
   end
   matT, vecT1, vecT2 = typeof(A), typeof(u), typeof(v)
   return NormalizedMatrix{T,matT,vecT1,vecT2}(A, n_obs, n_var, shift, scale, u, v)
@@ -68,7 +66,6 @@ end
 function LinearAlgebra.mul!(x::AbstractVector, _C::Transpose{<:Any,<:NormalizedMatrix}, y::AbstractVector)
   C = parent(_C)
   T = eltype(C)
-  v = C.v
   γ = sum(y)
   @. x = C.shift
   mul!(x, transpose(C.A), y, one(T), -T(γ))
@@ -91,48 +88,42 @@ function LinearAlgebra.mul!(AtB::AbstractMatrix, CAt::Transpose{<:Any,<:Normaliz
   return AtB
 end
 
-function form_AtApI!(AtApI::AbstractMatrix{T}, C::NormalizedMatrix{T}, alpha, beta) where T
-  BLAS.syrk!('L', 'T', T(alpha), C.A, zero(T), AtApI) # AtApI enters as I
-  BLAS.syr!('L', -T(C.n_obs), C.shift, AtApI)
-  ldiv!(Diagonal(C.scale), AtApI)
-  rdiv!(AtApI, Diagonal(C.scale))
-  @views begin
-    AtApI[diagind(AtApI)] .+= T(beta)
-  end
-  return AtApI
-end
-
 #
 # Extensions to GramPlusDiag
 #
-function GramPlusDiag(A_::NormalizedMatrix; kwargs...)
+function GramPlusDiag(A_::NormalizedMatrix{T}, D::Union{UniformScaling{T},Diagonal{T}} = one(T)*I; kwargs...) where T
   # do not compute AtA under normalization
-  gpd = GramPlusDiag(A; kwargs...)
+  gpd = GramPlusDiag(A_.A, D; kwargs...)
   # now pass to constructor using the possibly cached AtA
-  return GramPlusDiag(A_, gpg.AtA, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
+  return GramPlusDiag(A_, gpd.AtA, gpd.D, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
 end
 
 function NormalizedGramPlusDiag(gpd::GramPlusDiag)
   A_ = NormalizedMatrix(gpd.A)
-  return GramPlusDiag(A_, gpd.AtA, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
+  return GramPlusDiag(A_, gpd.AtA, gpd.D, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
+end
+
+function NormalizedGramPlusDiag(gpd::GramPlusDiag, D::AbstractMatrix)
+  A_ = NormalizedMatrix(gpd.A)
+  return GramPlusDiag(A_, gpd.AtA, D, gpd.n_obs, gpd.n_var, gpd.tmp, gpd.alpha, gpd.beta)
 end
 
 # make sure getindex works correctly when AtA is cached
-function _gpd_getindex_(::NormalizedMatrix, gpd)
+function _gpd_getindex_(::NormalizedMatrix, gpd, i, j)
   n, S, u = gpd.n_obs, Diagonal(gpd.A.scale), gpd.A.shift
-  S[i,i] * (gpd.AtA[i,j] - n*u[i]*u[j]) * S[j,j]
+  1/S[i,i] * (gpd.AtA[i,j] - n*u[i]*u[j]) * 1/S[j,j]
 end
 
 # make sure mul! works correctly when AtA is cached
 function _gpd_mul_(::NormalizedMatrix, y, gpd, x)
-  n, S, u = gpd.n_obs, Diagonal(gpd.A.scale), gpd.A.shift
+  n, S, avg, v = gpd.n_obs, Diagonal(gpd.A.scale), gpd.A.shift, gpd.A.v
   if size(gpd.AtA, 1) > 0
     # AtA is not stored in normalized format; need to shift
-    @. y = x
-    ldiv!(S, y)
-    c = dot(u, y)
-    mul!(y, Symmetric(gpd.AtA), x)
-    @. y = y - n*c*u
+    @. v = x
+    ldiv!(S, v)
+    c = dot(avg, v)
+    mul!(y, Symmetric(gpd.AtA), v)
+    @. y = y - n*c*avg
     ldiv!(S, y)
   else
     # mul! will handle shift and scale

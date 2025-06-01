@@ -2,52 +2,7 @@
 ### Initialization
 ###
 
-function initblocks!(::Type{T}, AtApI::GramPlusDiag, lambda, use_qlb, n_blk) where T
-  A, AtA = AtApI.A, AtApI.AtA
-  n_obs, n_var = size(A)
-  var_per_blk = cld(n_var, n_blk)
-  # Compute blocks along diagonal, Dₖ = Dₖₖ = AₖᵀAₖ + λI and extract their Cholesky decompositions
-  if use_qlb
-    if size(AtA, 1) > 0
-      D = BlkDiagHessian(AtApI, n_blk; alpha=1, beta=0, factor=false)
-    else
-      D = BlkDiagHessian(A, n_blk; alpha=1, beta=0, factor=false, gram=n_obs >= var_per_blk)
-    end
-    lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
-    D = update_factors!(D, 1, lambda + lambda_max)
-  else
-    if size(AtA, 1) > 0
-      D = BlkDiagHessian(AtApI, n_blk; alpha=n_blk, beta=lambda, factor=true)
-    else
-      D = BlkDiagHessian(A, n_blk; alpha=n_blk, beta=lambda, factor=true, gram=n_obs >= var_per_blk)
-    end
-  end
-  return D
-end
-
-function initdiag!(::Type{T}, AtApI::GramPlusDiag, lambda, use_qlb) where T
-  A, AtA = AtApI.A, AtApI.AtA
-  if size(AtA, 1) == 0
-    diag = zeros(T, size(A, 2))
-    for k in axes(A, 2)
-      @views diag[k] = dot(A[:, k], A[:, k])
-    end
-  else
-    diag = AtA[diagind(AtA)]
-  end
-  D = Diagonal(diag)
-
-  if use_qlb
-    lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
-    @. D.diag += lambda + lambda_max
-  else
-    n_blk = length(D.diag)
-    @. D.diag = n_blk * D.diag
-  end
-  return D
-end
-
-function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, D, lambda)
+function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, H, lambda)
   # Initialize the difference, d₁ = x₁ - x₀
   T = eltype(AtApI)
   A = AtApI.A
@@ -56,7 +11,7 @@ function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, D, lambda)
   mul!(g, transpose(A), r)        # -∇₀ = Aᵀ⋅r - λx
   !iszero(lambda) && axpy!(-T(lambda), x, g)
 
-  ldiv!(d, D, g) # d₁ = D⁻¹(-∇₀)
+  ldiv!(d, H, g) # d₁ = H⁻¹(-∇₀)
   @. x = x + d   # x₁ = x₀ + d₁
 
   # Current negative gradient, -∇₁
@@ -89,29 +44,80 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
 
   if var_per_blk > 1
+    #
+    # Block Diagonal Hessian
+    #
     if use_qlb && normalize
-      AtA0 = NormalizedGramPlusDiag(AtA)
-      D_blkd0 = initblocks!(T, AtA0, lambda, true, n_blk)
-      SDSpuuT = BlkDiagPlusRank1(A, D_blkd0)
-      _solve_OLS_loop(AtApI, SDSpuuT, b, x0, T(lambda); kwargs...)
+      let
+        AtA0 = NormalizedGramPlusDiag(AtA)
+        J = compute_block_diagonal(AtA0, n_blk;
+          alpha   = one(T),
+          beta    = zero(T),
+          factor  = false,
+          gram    = n_obs > var_per_blk
+        )
+        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        S = Diagonal(@. rho*AtA0.A.scale^2 + lambda)
+        @. AtA0.A.scale = 1 # need J̃ = √S⋅J⋅√S + ρS + λ = ZᵀZ + ρS + λ
+        J̃ = update_factors!(J, AtA0.A, S, one(T), one(T))
+        H = BlkDiagPlusRank1(n_obs, n_var, J̃, AtA0.A.shift, one(T), T(n_obs))
+        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
+    elseif use_qlb
+      let
+        J = compute_block_diagonal(AtA, n_blk;
+          alpha   = one(T),
+          beta    = zero(T),
+          factor  = false,
+          gram    = n_obs > var_per_blk
+        )
+        rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        H = update_factors!(J, one(T), lambda + rho)
+        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
     else
-      D_blkd = initblocks!(T, AtA, lambda, use_qlb, n_blk)
-      _solve_OLS_loop(AtApI, D_blkd, b, x0, T(lambda); kwargs...)
+      let
+        H = compute_block_diagonal(AtA, n_blk;
+          alpha   = T(n_blk),
+          beta    = T(lambda),
+          factor  = true,
+          gram    = n_obs > var_per_blk
+        )
+        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
     end
   else
+    #
+    # Diagonal (Plus Rank-1) Hessian
+    #
     if use_qlb && normalize
-      AtA0 = NormalizedGramPlusDiag(AtA)
-      D_diag0 = initdiag!(T, AtA0, lambda, true)
-      SDSpuuT = BlkDiagPlusRank1(A, D_diag0)
-      _solve_OLS_loop(AtApI, SDSpuuT, b, x0, T(lambda); kwargs...)
+      let
+        AtA0 = NormalizedGramPlusDiag(AtA)
+        J = compute_main_diagonal(AtA0.A, AtA0.AtA)
+        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        @. J.diag = (1+rho)*AtA0.A.scale^2 + T(lambda)
+        H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
+        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
+    elseif use_qlb
+      let
+        J = compute_main_diagonal(AtA.A, AtA.AtA)
+        rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        H = J
+        @. H.diag = H.diag + rho + lambda
+        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
     else
-      D_diag = initdiag!(T, AtA, lambda, use_qlb)
-      _solve_OLS_loop(AtApI, D_diag, b, x0, T(lambda); kwargs...)
+      let
+        H = compute_main_diagonal(AtA.A, AtA.AtA)
+        @. H.diag = n_blk*H.diag + lambda
+        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
     end
   end
 end
 
-function _solve_OLS_loop(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}, lambda::T;
+function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}, lambda::T;
   maxiter::Int = 100,
   gtol::Float64 = 1e-3,
 ) where T
@@ -124,7 +130,7 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T},
   d = zeros(n_var)
   g = zeros(n_var)
   w = zeros(n_var)
-  r = init_recurrences!(d, x, g, w, AtApI, b, D, lambda)
+  r = init_recurrences!(d, x, g, w, AtApI, b, H, lambda)
 
   # Iterate the algorithm map
   iter = 1
@@ -133,8 +139,8 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T},
   while !converged && (iter < maxiter)
     iter += 1
 
-    # Update difference dₙ₊₁ = [I - D⁻¹(AᵀA+λI)] dₙ
-    ldiv!(D, w)
+    # Update difference dₙ₊₁ = [I - H⁻¹(AᵀA+λI)] dₙ
+    ldiv!(H, w)
     @. d = d - w
 
     # Update coefficients
@@ -203,22 +209,13 @@ function solve_OLS_cg(A, b;
   lambda >= 0 || error("Regularization λ must be non-negative. Got: $(lambda)")
   T = eltype(A)
 
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=T(lambda), gram=gram)
+  AtA = GramPlusDiag(A; gram=gram)
+  AtApI = GramPlusDiag(AtA, one(T), T(lambda))
 
   if use_qlb # precondition with QLB matrix
-    AtA = AtApI.AtA
-    if size(AtA, 1) == 0
-      diag = zeros(T, size(A, 2))
-      for k in axes(A, 2)
-        @views diag[k] = dot(A[:, k], A[:, k])
-      end
-    else
-      diag = AtA[diagind(AtA)]
-    end
-    D = Diagonal(diag)
-    
-    lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
-    @. D.diag += lambda + lambda_max
+    D = compute_main_diagonal(AtA.A, AtA.AtA)
+    rho = estimate_spectral_radius(AtA, D, maxiter=3)
+    @. D.diag += lambda + rho
 
     x, ch = cg!(x0, AtApI, transpose(A)*b; Pl=D, log=true, kwargs...)
   else

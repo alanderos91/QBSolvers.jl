@@ -1,10 +1,10 @@
 ###
 ### Block Diagonal Hessian 
 ###
-### | αA₁ᵀA₁+βI                         |
-### |           αA₂ᵀA₂+βI               |
+### | αA₁ᵀA₁+βD                         |
+### |           αA₂ᵀA₂+βD               |
 ### |                     ⋱            |
-### |                        αAₘᵀAₘ+βI  |
+### |                        αAₘᵀAₘ+βD  |
 ###
 
 struct BlkDiagHessian{T,matT1,matT2,blkmatT,gpdT} <: AbstractMatrix{T}
@@ -19,7 +19,7 @@ struct BlkDiagHessian{T,matT1,matT2,blkmatT,gpdT} <: AbstractMatrix{T}
   beta::T
 end
 
-function BlkDiagHessian(A::AbstractMatrix{T}, n_blk::Int;
+function BlkDiagHessian(A::AbstractMatrix{T}, D, n_blk::Int;
   alpha::Real   = one(T),
   beta::Real    = zero(T),
   factor::Bool  = true,
@@ -30,34 +30,32 @@ function BlkDiagHessian(A::AbstractMatrix{T}, n_blk::Int;
   var_per_blk = cld(n_var, n_blk)
   A_blk = BlockedArray(A, [n_obs], repeat([var_per_blk], n_blk))
 
-  A_11 = view(A_blk, Block(1))
-  D_11 = GramPlusDiag(A_11; alpha=alpha, beta=beta, gram=gram)
-  diag = Vector{typeof(D_11)}(undef, n_blk)
+  blk1 = make_AtApD_blk(A_blk, D, 1, alpha, beta, gram)
+  diag = Vector{typeof(blk1)}(undef, n_blk)
   chol = Vector{Cholesky{T,Matrix{T}}}(undef, n_blk)
 
-  diag[1] = D_11
+  diag[1] = blk1
   if factor
-    chol[1] = cholesky!(Symmetric(form_AtApI(A_11, alpha, beta), :L))
+    chol[1] = factor_AtApD_blk(diag[1], alpha, beta)
   end
 
   for k in 2:n_blk
-    A_kk = view(A_blk, Block(k))
-    diag[k] = GramPlusDiag(A_kk; alpha=alpha, beta=beta, gram=gram)
+    diag[k] = make_AtApD_blk(A_blk, D, k, alpha, beta, gram)
     if factor
-      chol[k] = cholesky!(Symmetric(form_AtApI(A_kk, alpha, beta), :L))
+      chol[k] = factor_AtApD_blk(diag[k], alpha, beta)
     end
   end
 
   return BlkDiagHessian(A, n_obs, n_var, n_blk, A_blk, diag, chol, T(alpha), T(beta))
 end
 
-function BlkDiagHessian(AtApI::GramPlusDiag{T}, n_blk::Int;
+function BlkDiagHessian(AtApD::GramPlusDiag{T}, n_blk::Int;
   alpha::Real   = one(T),
   beta::Real    = zero(T),
   factor::Bool  = true,
 ) where T
   #
-  A, AtA = AtApI.A, AtApI.AtA
+  A, AtA, D = AtApD.A, AtApD.AtA, AtApD.D
   @assert size(AtA, 1) > 0 # raise an error if we never cached the full AtA
 
   n_obs, n_var = size(A)
@@ -66,50 +64,67 @@ function BlkDiagHessian(AtApI::GramPlusDiag{T}, n_blk::Int;
   A_blk = BlockedArray(A, [n_obs], blocksizes)
   AtA_blk = BlockedArray(AtA, blocksizes, blocksizes)
 
-  A_1  = view(A_blk, Block(1))
-  A_11 = view(AtA_blk, Block(1), Block(1))
-  D_11 = GramPlusDiag(A_1, copy(A_11), n_obs, size(A_1, 2), similar(A, 0), T(alpha), T(beta))
-  diag = Vector{typeof(D_11)}(undef, n_blk)
+  blk1 = make_AtApD_blk(A_blk, AtA_blk, D, 1, alpha, beta)
+  diag = Vector{typeof(blk1)}(undef, n_blk)
   chol = Vector{Cholesky{T,Matrix{T}}}(undef, n_blk)
 
-  diag[1] = D_11
+  diag[1] = blk1
   if factor
-    chol[1] = cholesky!(Symmetric(form_AtApI(A_1, alpha, beta), :L))
+    chol[1] = factor_AtApD_blk(diag[1], alpha, beta)
   end
 
   for k in 2:n_blk
-    A_k  = view(A_blk, Block(k))
-    A_kk = view(AtA_blk, Block(k), Block(k))
-    diag[k] = GramPlusDiag(A_k, copy(A_kk), n_obs, size(A_k, 2), similar(A, 0), T(alpha), T(beta))
+    diag[k] = make_AtApD_blk(A_blk, AtA_blk, D, k, alpha, beta)
     if factor
-      chol[k] = cholesky!(Symmetric(form_AtApI(A_k, alpha, beta), :L))
+      chol[k] = factor_AtApD_blk(diag[k], alpha, beta)
     end
   end
 
   return BlkDiagHessian(A, n_obs, n_var, n_blk, A_blk, diag, chol, T(alpha), T(beta))
 end
 
-function form_AtApI(A::AbstractMatrix{T}, alpha, beta) where T
-  p = size(A, 2)
-  form_AtApI!(Matrix{T}(I, p, p), A, alpha, beta)
-end
-
-function form_AtApI!(AtApI::AbstractMatrix{T}, A::AbstractMatrix{T}, alpha, beta) where T
-  BLAS.syrk!('L', 'T', T(alpha), A, T(beta), AtApI) # AtApI enters as I
-end
-
-function update_factors!(bdh::BlkDiagHessian{T}, alpha, beta) where T
+function update_factors!(bdh::BlkDiagHessian, alpha, beta)
+  T = eltype(bdh)
   for k in 1:bdh.n_blk
-    A_kk = view(bdh.A_blk, Block(k))
     bdh.diag[k] = GramPlusDiag(bdh.diag[k], alpha, beta)
     if isassigned(bdh.chol, k)
-      AtApI = form_AtApI!(bdh.chol[k].factors, A_kk, alpha, beta)
+      bdh.chol[k] = factor_AtApD_blk!(bdh.chol[k].factors, bdh.diag[k], alpha, beta)
     else
-      AtApI = form_AtApI(A_kk, alpha, beta)
+      bdh.chol[k] = factor_AtApD_blk(bdh.diag[k], alpha, beta)
     end
-    bdh.chol[k] = cholesky!(Symmetric(AtApI, :L))
   end
   return bdh
+end
+
+function update_factors!(bdh::BlkDiagHessian, A, D, alpha, beta)
+  T = eltype(bdh)
+  n_obs, n_var, n_blk = bdh.n_obs, bdh.n_var, bdh.n_blk
+  var_per_blk = cld(n_var, n_blk)
+  chol = bdh.chol
+  A_blk = BlockedArray(A, [n_obs], repeat([var_per_blk], n_blk))
+  blk1 = make_AtApD_blk(bdh, A_blk, D, 1, alpha, beta)
+  diag = Vector{typeof(blk1)}(undef, n_blk)
+  diag[1] = blk1
+
+  if isassigned(chol, 1)
+    chol[1] = factor_AtApD_blk!(chol[1].factors, diag[1], alpha, beta)
+  else
+    chol[1] = factor_AtApD_blk(diag[1], alpha, beta)
+  end
+
+  for k in 2:bdh.n_blk
+    diag[k] = make_AtApD_blk(bdh, A_blk, D, k, alpha, beta)
+    if isassigned(chol, k)
+      chol[k] = factor_AtApD_blk!(chol[k].factors, diag[k], alpha, beta)
+    else
+      chol[k] = factor_AtApD_blk(diag[k], alpha, beta)
+    end
+  end
+  return BlkDiagHessian(
+    A, bdh.n_obs, bdh.n_var, bdh.n_blk,
+    A_blk,
+    diag, chol, T(alpha), T(beta)
+  )
 end
 
 function Base.getindex(bdh::BlkDiagHessian{T}, i, j) where T
