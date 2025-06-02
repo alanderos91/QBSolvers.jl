@@ -46,12 +46,42 @@ function qreg_objective_uniform(r, q, h)
   end
 end
 
+function init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI::GramPlusDiag, b, H, q, h, lambda)
+  # Initialize the difference, d₁ = x₁ - x₀ = D⁻¹ (-∇₀)
+  T = eltype(AtApI)
+  A = AtApI.A
+  r = copy(b)                     # r₀ = b - Ax₀
+  mul!(r, A, x, -one(T), one(T))
+  prox_abs!(z_new, r, h)          # z₀ = prox[h|⋅|](r₀)
+  @. u = r - z_new                # -∇₀ = Aᵀ[r₀ - z₀ .+ (2q-1)h]
+  @. u = u + (2*q-1)*h
+  mul!(g, transpose(A), u, inv(T(2*h)), zero(T))
+  # !iszero(g) && axpy!(-T(lambda), x, g)
+
+  ldiv!(d, H, g)                  # d₁ = H⁻¹(-∇₀)
+  @. x = x + d                    # x₁ = x₀ + d₁
+
+  # Update recurrences to n = 1
+  mul!(u, A, d)               # r₁ = r₀ - A d₁
+  @. r = r - u
+  prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
+  @. v = u + z_old - z_new
+  mul!(w, transpose(A), v)    # Aᵀ(A d₁ + z₁ - z₀)
+  @. g = g - inv(T(2*h)) * w  # -∇₁ = -∇₀ - (2h)⁻¹Aᵀ(A d₁ + z₁ - z₀)
+
+  return r
+end
+
 ###
 ### Implementation
 ###
 
 function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  q::Float64 = 0.5,
+  q::Real         = T(0.5),
+  h::Real         = T(default_bandwidth(A)),
+  lambda::Real    = T(0.0),
+  gram::Bool      = _cache_gram_heuristic_(A),
+  normalize::Bool = false,
   kwargs...
 ) where T
   #
@@ -62,133 +92,74 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   @assert var_per_blk > 0
   @assert 0 < q < 1
 
+  AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
+  AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
+
   if var_per_blk > 1
-    _solve_QREG_blkdiag(A, b, x0, n_blk; q=q, kwargs...)
-  else
-    _solve_QREG_diag(A, b, x0, n_blk; q=q, kwargs...)
-  end
-end
-
-function _solve_QREG_diag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  q::Float64    = 0.5,
-  h::Float64    = default_bandwidth(A),
-  maxiter::Int  = 100,
-  gtol::Float64 = 1e-3,
-  gram::Bool = _cache_gram_heuristic_(A),
-) where T
-  #
-  n_obs, n_var = size(A)
-
-  # Setup AᵀA and block diagonal D
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T), gram=gram)
-  AtA = AtApI.AtA
-
-  if size(AtA, 1) == 0
-    diag = zeros(T, size(A, 2))
-    for k in axes(A, 2)
-      @views diag[k] = dot(A[:, k], A[:, k])
+    #
+    # Block Diagonal Hessian
+    #
+    if normalize
+      let
+        AtA0 = NormalizedGramPlusDiag(AtA)
+        J = compute_block_diagonal(AtA0, n_blk;
+          alpha   = one(T),
+          beta    = zero(T),
+          factor  = false,
+          gram    = n_obs > var_per_blk
+        )
+        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        S = Diagonal(@. rho*AtA0.A.scale^2 + lambda)
+        @. AtA0.A.scale = 1 # need J̃ = √S⋅J⋅√S + ρS + λ = ZᵀZ + ρS + λ
+        J̃ = update_factors!(J, AtA0.A, S, one(T), one(T))
+        H = BlkDiagPlusRank1(n_obs, n_var, J̃, AtA0.A.shift, one(T), T(n_obs))
+        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
+    else
+      let
+        J = compute_block_diagonal(AtA, n_blk;
+          alpha   = one(T),
+          beta    = zero(T),
+          factor  = false,
+          gram    = n_obs > var_per_blk
+        )
+        rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        H = update_factors!(J, one(T), lambda + rho)
+        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
     end
   else
-    diag = AtA[diagind(AtA)]
+    #
+    # Diagonal (Plus Rank-1) Hessian
+    #
+    if normalize
+      let
+        AtA0 = NormalizedGramPlusDiag(AtA)
+        J = compute_main_diagonal(AtA0.A, AtA0.AtA)
+        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        @. J.diag = (1+rho)*AtA0.A.scale^2 + T(lambda)
+        H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
+        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
+    else
+      let
+        @time J = compute_main_diagonal(AtA.A, AtA.AtA)
+        @time rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        H = J
+        @. H.diag = H.diag + rho + lambda
+        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
+    end
   end
-  D = Diagonal(diag)
-
-  lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
-  @. D.diag += lambda_max
-
-  # 
-  x = deepcopy(x0)
-  d = zeros(n_var)
-  g = zeros(n_var)
-  u = zeros(n_obs)
-  v = zeros(n_obs)
-  w = zeros(n_var)
-  z_new = zeros(n_obs)
-  z_old = zeros(n_obs)
-
-  # Initialize the difference, d₁ = x₁ - x₀ = D⁻¹ (-∇₀)
-  r = copy(b)                     # r₀ = b - Ax₀
-  mul!(r, A, x, -one(T), one(T))
-  prox_abs!(z_new, r, h)          # z₀ = prox[h|⋅|](r₀)
-  @. u = r - z_new                # -∇₀ = Aᵀ[r₀ - z₀ .+ (2q-1)h]
-  @. u = u + (2*q-1)*h
-  mul!(g, transpose(A), u, inv(T(2*h)), zero(T))
-  ldiv!(d, D, g)                  # d₁ = D⁻¹(-∇₀)
-  @. x = x + d                    # x₁ = x₀ + d₁
-
-  # Update recurrences to n = 1
-  mul!(u, A, d)               # r₁ = r₀ - A d₁
-  @. r = r - u
-  prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
-  @. v = u + z_old - z_new
-  mul!(w, transpose(A), v)    # Aᵀ(A d₁ + z₁ - z₀)
-  @. g = g - inv(T(2*h)) * w  # -∇₁ = -∇₀ - (2h)⁻¹Aᵀ(A d₁ + z₁ - z₀)
-
-  # Iterate the algorithm map
-  iter = 1
-  converged = norm(g) <= gtol
-
-  while !converged && (iter < maxiter)
-    iter += 1
-
-    # Compute dₙ₊₁ = dₙ - (2h)⁻¹D⁻¹ Aᵀ (A dₙ + zₙ - zₙ₋₁)
-    ldiv!(D, w)
-    @. d = d - inv(T(2*h)) * w
-
-    # Update coefficients
-    @. x = x + d
-
-    # Compute rₙ₊₁ = rₙ - A dₙ₊₁
-    mul!(u, A, d)
-    @. r = r - u
-
-    # Compute zₙ₊₁ = prox[h|⋅|](rₙ₊₁)
-    prox_abs!(z_new, r, h)
-
-    # Compute A dₙ₊₁ + zₙ₊₁ - zₙ
-    @. v = u + z_new - z_old
-
-    # Compute Aᵀ (A dₙ₊₁ + zₙ₊₁ - zₙ) and -∇ₙ₊₁
-    mul!(w, transpose(A), v)
-    @. g = g - inv(T(2*h)) * w  # assumes g is always -∇
-    converged = norm(g) <= gtol
-
-    # don't copy, swap'em
-    z_new, z_old = z_old, z_new
-  end
-
-  stats = (
-    iterations = iter,
-    converged = converged,
-    xnorm = norm(x),
-    rnorm = norm(r),
-    gnorm = norm(g),
-  )
-
-  return x, r, stats
 end
 
-function _solve_QREG_blkdiag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  q::Float64    = 0.5,
-  h::Float64    = default_bandwidth(A),
+function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}, q::T, h::T, lambda::T;
   maxiter::Int  = 100,
   gtol::Float64 = 1e-3,
-  gram::Bool = _cache_gram_heuristic_(A),
 ) where T
   #
+  A = AtApI.A
   n_obs, n_var = size(A)
-  var_per_blk = cld(n_var, n_blk)
-
-  # Setup AᵀA and block diagonal D
-  AtApI = GramPlusDiag(A; alpha=one(T), beta=zero(T), gram=gram)
-
-  if gram
-    D = BlkDiagHessian(AtApI, n_blk; alpha=one(T), beta=zero(T), factor=false)
-  else
-    D = BlkDiagHessian(A, n_blk; alpha=one(T), beta=zero(T), factor=false, gram=n_obs >= var_per_blk)
-  end
-  lambda_max = estimate_dominant_eigval(GramPlusDiag(AtApI, 1, 0), D, maxiter=3)
-  D = update_factors!(D, one(T), T(lambda_max))
 
   # 
   x = deepcopy(x0)
@@ -199,24 +170,7 @@ function _solve_QREG_blkdiag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, 
   w = zeros(n_var)
   z_new = zeros(n_obs)
   z_old = zeros(n_obs)
-
-  # Initialize the difference, d₁ = x₁ - x₀ = D⁻¹ (-∇₀)
-  r = copy(b)                     # r₀ = b - Ax₀
-  mul!(r, A, x, -one(T), one(T))
-  prox_abs!(z_new, r, h)          # z₀ = prox[h|⋅|](r₀)
-  @. u = r - z_new                # -∇₀ = Aᵀ[r₀ - z₀ .+ (2q-1)h]
-  @. u = u + (2*q-1)*h
-  mul!(g, transpose(A), u, inv(T(2*h)), zero(T))
-  ldiv!(d, D, g)                  # d₁ = D⁻¹(-∇₀)
-  @. x = x + d                    # x₁ = x₀ + d₁
-
-  # Update recurrences to n = 1
-  mul!(u, A, d)               # r₁ = r₀ - A d₁
-  @. r = r - u
-  prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
-  @. v = u + z_old - z_new
-  mul!(w, transpose(A), v)    # Aᵀ(A d₁ + z₁ - z₀)
-  @. g = g - inv(T(2*h)) * w  # -∇₁ = -∇₀ - (2h)⁻¹Aᵀ(A d₁ + z₁ - z₀)
+  r = init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI, b, H, q, h, lambda)
 
   # Iterate the algorithm map
   iter = 1
@@ -226,7 +180,7 @@ function _solve_QREG_blkdiag(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, 
     iter += 1
 
     # Compute dₙ₊₁ = dₙ - (2h)⁻¹D⁻¹ Aᵀ (A dₙ + zₙ - zₙ₋₁)
-    ldiv!(D, w)
+    ldiv!(H, w)
     @. d = d - inv(T(2*h)) * w
 
     # Update coefficients
