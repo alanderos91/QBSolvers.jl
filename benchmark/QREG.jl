@@ -54,7 +54,6 @@ function main(n, p, q, seed)
   tol = 1e-6    # change in objective, relative to previous value
 
   results = DataFrame(
-    threads=Int[],
     n=Int[],
     p=Int[],
     q=Float64[],
@@ -93,7 +92,7 @@ function main(n, p, q, seed)
   grad = inv(2*h) * transpose(X) * z
 
   push!(results,
-    (Threads.nthreads(), n, p, q, h, 1, p+1, "MMDeweighting",
+    (n, p, q, h, 1, p+1, "MMDeweighting",
       median(benchMMD.times) * tscale, iter,
       norm(β̂), norm(r), norm(grad),
       PLS.qreg_objective(r, q),
@@ -114,7 +113,7 @@ function main(n, p, q, seed)
   grad = inv(2*h) * transpose(X) * z
 
   push!(results,
-    (Threads.nthreads(), n, p, q, h, 1, p+1, "conquer",
+    (n, p, q, h, 1, p+1, "conquer",
       median(benchCQR.times) * tscale, iter,
       norm(β̂), norm(r), norm(grad),
       PLS.qreg_objective(r, q),
@@ -122,23 +121,25 @@ function main(n, p, q, seed)
     )
   )
 
-  for var_per_blk in (2^k for k in 0:Int(log2(p+1)))
+  for var_per_blk in (2^k for k in 0:Int(log2(p+1))-1)
     n_blk = fld(p+1, var_per_blk)
-    β̂, _, stats = solve_QREG(X, y, β0, n_blk;
-      q=q, h=h, maxiter=maxiter, gtol=gtol)
-    r = y - X*β̂
+    for normalize in (false, true)
+      β̂, _, stats = solve_QREG(X, y, β0, n_blk;
+        q=q, h=h, maxiter=maxiter, gtol=gtol)
+      r = y - X*β̂
 
-    benchMM = @benchmark solve_QREG($X, $y, $β0, $n_blk;
-      q=$q, h=$h, maxiter=$maxiter, gtol=$gtol) samples=N
+      benchMM = @benchmark solve_QREG($X, $y, $β0, $n_blk;
+        q=$q, h=$h, maxiter=$maxiter, gtol=$gtol) samples=N
 
-    push!(results,
-      (Threads.nthreads(), n, p, q, h, n_blk, var_per_blk, "MM-QLB",
-        median(benchMM.times) * tscale, stats.iterations,
-        stats.xnorm, stats.rnorm, stats.gnorm,
-        PLS.qreg_objective(r, q),
-        PLS.qreg_objective_uniform(r, q, h),
+      push!(results,
+        (n, p, q, h, n_blk, var_per_blk, normalize ? "QUBn" : "QUB",
+          median(benchMM.times) * tscale, stats.iterations,
+          stats.xnorm, stats.rnorm, stats.gnorm,
+          PLS.qreg_objective(r, q),
+          PLS.qreg_objective_uniform(r, q, h),
+        )
       )
-    )
+    end
   end
 
   fmt_time = ft_printf("%5.2f", findfirst(==("time"), names(results)))
@@ -149,7 +150,7 @@ function main(n, p, q, seed)
     results;
     formatters = fmt_time,
     header = [
-      "threads", "samples", "variables", "q", "bandwidth", "blocks", "block size",
+      "samples", "variables", "q", "bandwidth", "blocks", "block size",
       "method", "time (us)", "iterations", "xnorm", "rnorm", "gnorm", "objv1", "objv2",
     ]
   )
@@ -161,7 +162,7 @@ function main(n, p, q, seed)
     formatters = (fmt_time, fmt_norm),
     tf = tf_latex_booktabs,
     header = [
-      "threads", "samples", "variables", latex_cell"$q$", latex_cell"$h$", "blocks", "block size",
+      "samples", "variables", latex_cell"$q$", latex_cell"$h$", "blocks", "block size",
       "method", latex_cell"time ($\mu$s)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$\|g\|$", "objv1", "objv2",
     ]
   )

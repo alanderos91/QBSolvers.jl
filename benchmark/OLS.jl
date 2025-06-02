@@ -31,10 +31,8 @@ function main(n, p, λ, seed)
   N = 1000 # number of @benchmark samples
   Random.seed!(seed)
   maxiter = 10^4
-  use_qlb = true
 
   results = DataFrame(
-    threads=Int[],
     n=Int[],
     p=Int[],
     λ=Float64[],
@@ -57,7 +55,7 @@ function main(n, p, λ, seed)
   _, _, statsLSMR = solve_OLS_lsmr(A, b; lambda=λ)
   benchLSMR = @benchmark solve_OLS_lsmr($A, $b; lambda=$λ) samples=N
   push!(results,
-    (Threads.nthreads(), n, p, λ, 1, p, "LSMR",
+    (n, p, λ, 1, p, "LSMR",
       median(benchLSMR.times) * 1e-6, statsLSMR.iterations,
       statsLSMR.xnorm, statsLSMR.rnorm, statsLSMR.gnorm,
     )
@@ -69,7 +67,7 @@ function main(n, p, λ, seed)
   _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=false)
   benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=false)
   push!(results,
-    (Threads.nthreads(), n, p, λ, 1, p, "CG",
+    (n, p, λ, 1, p, "CG",
       median(benchCG.times) * 1e-6, statsCG.iterations,
       statsCG.xnorm, statsCG.rnorm, statsCG.gnorm,
     )
@@ -79,7 +77,7 @@ function main(n, p, λ, seed)
   _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=true)
   benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=true)
   push!(results,
-    (Threads.nthreads(), n, p, λ, 1, p, "PCG",
+    (n, p, λ, 1, p, "PCG",
       median(benchPCG.times) * 1e-6, statsPCG.iterations,
       statsPCG.xnorm, statsPCG.rnorm, statsPCG.gnorm,
     )
@@ -87,16 +85,18 @@ function main(n, p, λ, seed)
 
   for var_per_blk in (2^k for k in 0:8)
     n_blk = fld(p, var_per_blk)
-    _, _, stats = solve_OLS(A, b, x0, n_blk;
-      lambda=λ, maxiter=maxiter, gtol=gnormLSMR, use_qlb=use_qlb)
-    benchMM = @benchmark solve_OLS($A, $b, $x0, $n_blk;
-      lambda=$λ, maxiter=$maxiter, gtol=$gnormLSMR, use_qlb=$use_qlb) samples=N
-    push!(results,
-      (Threads.nthreads(), n, p, λ, n_blk, var_per_blk, use_qlb ? "MM-QLB" : "MM",
-        median(benchMM.times) * 1e-6, stats.iterations,
-        stats.xnorm, stats.rnorm, stats.gnorm,
+    for normalize in (false, true)
+      _, _, stats = solve_OLS(A, b, x0, n_blk;
+        lambda=λ, maxiter=maxiter, gtol=gnormLSMR, use_qlb=true, normalize=normalize)
+      benchMM = @benchmark solve_OLS($A, $b, $x0, $n_blk;
+        lambda=$λ, maxiter=$maxiter, gtol=$gnormLSMR, use_qlb=true, normalize=$normalize) samples=N
+      push!(results,
+        (n, p, λ, n_blk, var_per_blk, normalize ? "QUBn" : "QUB",
+          median(benchMM.times) * 1e-6, stats.iterations,
+          stats.xnorm, stats.rnorm, stats.gnorm,
+        )
       )
-    )
+    end
   end
 
   fmt_time = ft_printf("%5.0f", findfirst(==("time"), names(results)))
@@ -107,7 +107,7 @@ function main(n, p, λ, seed)
     results;
     formatters = fmt_time,
     header = [
-      "threads", "samples", "variables", "λ", "blocks", "block size",
+      "samples", "variables", "λ", "blocks", "block size",
       "method", "time (ms)", "iterations", "xnorm", "rnorm", "gnorm"
     ]
   )
@@ -119,7 +119,7 @@ function main(n, p, λ, seed)
     formatters = (fmt_time, fmt_norm),
     tf = tf_latex_booktabs,
     header = [
-      "threads", "samples", "variables", latex_cell"$\lambda$", "blocks", "block size",
+      "samples", "variables", latex_cell"$\lambda$", "blocks", "block size",
       "method", "time (ms)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$\|g\|$"
     ]
   )
