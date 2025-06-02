@@ -27,8 +27,13 @@ function NormalizedMatrix(A::AbstractMatrix{T};
   
   for j in axes(A, 2)
     @views a = A[:, j]
-    s = sqrt(dot(a, a) - n_obs*shift[j]^2)
-    scale[j] = ifelse(iszero(s), one(T), s)
+    if all(==(1), a)
+      shift[j] = zero(T)
+      scale[j] = sqrt(n_obs)
+    else
+      s = sqrt(dot(a, a) - n_obs*shift[j]^2)
+      scale[j] = ifelse(iszero(s), one(T), s)
+    end
   end
   matT, vecT1, vecT2 = typeof(A), typeof(u), typeof(v)
   return NormalizedMatrix{T,matT,vecT1,vecT2}(A, n_obs, n_var, shift, scale, u, v)
