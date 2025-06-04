@@ -1,3 +1,6 @@
+const QREGTimer = TimerOutput()
+disable_timer!(QREGTimer)
+
 ###
 ### Helper functions
 ###
@@ -48,26 +51,35 @@ end
 
 function init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI::GramPlusDiag, b, H, q, h, lambda)
   # Initialize the difference, d₁ = x₁ - x₀ = D⁻¹ (-∇₀)
+  global QREGTimer
   T = eltype(AtApI)
   A = AtApI.A
-  r = copy(b)                     # r₀ = b - Ax₀
+  @timeit QREGTimer "compute r₀" begin
+  r = copy(b) # r₀ = b - Ax₀
   mul!(r, A, x, -one(T), one(T))
-  prox_abs!(z_new, r, h)          # z₀ = prox[h|⋅|](r₀)
+  end
+  @timeit QREGTimer "compute z₀" prox_abs!(z_new, r, h) # z₀ = prox[h|⋅|](r₀)
+  @timeit QREGTimer "compute -∇₀" begin
   @. u = r - z_new                # -∇₀ = Aᵀ[r₀ - z₀ .+ (2q-1)h]
   @. u = u + (2*q-1)*h
   mul!(g, transpose(A), u, inv(T(2*h)), zero(T))
   # !iszero(g) && axpy!(-T(lambda), x, g)
+  end
 
-  ldiv!(d, H, g)                  # d₁ = H⁻¹(-∇₀)
-  @. x = x + d                    # x₁ = x₀ + d₁
+  @timeit QREGTimer "compute d₁" ldiv!(d, H, g)  # d₁ = H⁻¹(-∇₀)
+  @timeit QREGTimer "compute x₁" @. x = x + d    # x₁ = x₀ + d₁
 
   # Update recurrences to n = 1
-  mul!(u, A, d)               # r₁ = r₀ - A d₁
+  @timeit QREGTimer "compute r₁" begin
+  mul!(u, A, d)  # r₁ = r₀ - A d₁
   @. r = r - u
-  prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
+  end
+  @timeit QREGTimer "compute z₁" prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
+  @timeit QREGTimer "compute -∇₁" begin
   @. v = u + z_old - z_new
   mul!(w, transpose(A), v)    # Aᵀ(A d₁ + z₁ - z₀)
   @. g = g - inv(T(2*h)) * w  # -∇₁ = -∇₀ - (2h)⁻¹Aᵀ(A d₁ + z₁ - z₀)
+  end
 
   return r
 end
@@ -85,6 +97,7 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   kwargs...
 ) where T
   #
+  global QREGTimer; enable_timer!(QREGTimer); reset_timer!(QREGTimer)
   n_obs, n_var = size(A)
   var_per_blk = cld(n_var, n_blk)
 
@@ -92,40 +105,52 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   @assert var_per_blk > 0
   @assert 0 < q < 1
 
+  @timeit QREGTimer "init AtA + λI; gram=$(gram)" begin
   AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
+  end
 
-  if var_per_blk > 1
+  results = if var_per_blk > 1
     #
     # Block Diagonal Hessian
     #
     if normalize
+      @timeit QREGTimer "BlkDiag QLB; normalize=true" begin
       let
-        AtA0 = NormalizedGramPlusDiag(AtA)
+        @timeit QREGTimer "normalize" AtA0 = NormalizedGramPlusDiag(AtA)
+        @timeit QREGTimer "BlkDiag J" begin
         J = compute_block_diagonal(AtA0, n_blk;
           alpha   = one(T),
           beta    = zero(T),
           factor  = false,
           gram    = n_obs > var_per_blk
         )
-        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        end
+        @timeit QREGTimer "spectral radius" rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        @timeit QREGTimer "Hessian; BlkDiag + Rank-1" begin
         S = Diagonal(@. rho*AtA0.A.scale^2 + lambda)
         @. AtA0.A.scale = 1 # need J̃ = √S⋅J⋅√S + ρS + λ = ZᵀZ + ρS + λ
         J̃ = update_factors!(J, AtA0.A, S, one(T), one(T))
         H = BlkDiagPlusRank1(n_obs, n_var, J̃, AtA0.A.shift, one(T), T(n_obs))
-        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+        end
+        @timeit QREGTimer "QREG loop" _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
       end
     else
+      @timeit QREGTimer "BlkDiag QLB; normalize=false" begin
       let
+        @timeit QREGTimer "BlkDiag J" begin
         J = compute_block_diagonal(AtA, n_blk;
           alpha   = one(T),
           beta    = zero(T),
           factor  = false,
           gram    = n_obs > var_per_blk
         )
-        rho = estimate_spectral_radius(AtA, J, maxiter=1)
-        H = update_factors!(J, one(T), lambda + rho)
-        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+        end
+        @timeit QREGTimer "spectral radius" rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        @timeit QREGTimer "Hessian; BlkDiag" H = update_factors!(J, one(T), lambda + rho)
+        @timeit QREGTimer "QREG loop" _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
       end
     end
   else
@@ -133,24 +158,35 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
     # Diagonal (Plus Rank-1) Hessian
     #
     if normalize
+      @timeit QREGTimer "Diag QLB; normalize=true" begin
       let
-        AtA0 = NormalizedGramPlusDiag(AtA)
-        J = compute_main_diagonal(AtA0.A, AtA0.AtA)
-        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        @timeit QREGTimer "normalize" AtA0 = NormalizedGramPlusDiag(AtA)
+        @timeit QREGTimer "Diag J" J = compute_main_diagonal(AtA0.A, AtA0.AtA)
+        @timeit QREGTimer "spectral radius" rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        @timeit QREGTimer "Hessian; Diag + Rank-1" begin
         @. J.diag = (1+rho)*AtA0.A.scale^2 + T(lambda)
         H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
-        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+        end
+        @timeit QREGTimer "QREG loop" _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
       end
     else
+      @timeit QREGTimer "Diag QLB; normalize=false" begin
       let
-        @time J = compute_main_diagonal(AtA.A, AtA.AtA)
-        @time rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        @timeit QREGTimer "Diag J" J = compute_main_diagonal(AtA.A, AtA.AtA)
+        @timeit QREGTimer "spectral radius" @time rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        @timeit QREGTimer "Hessian; Diag" begin
         H = J
         @. H.diag = H.diag + rho + lambda
-        _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+        end
+        @timeit QREGTimer "QREG loop" _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
+      end
       end
     end
   end
+  disable_timer!(QREGTimer)
+  display(QREGTimer)
+  return results
 end
 
 function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}, q::T, h::T, lambda::T;
@@ -158,10 +194,12 @@ function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}
   gtol::Float64 = 1e-3,
 ) where T
   #
+  global QREGTimer
   A = AtApI.A
   n_obs, n_var = size(A)
 
   # 
+  @timeit QREGTimer "init workspace" begin
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
@@ -170,41 +208,49 @@ function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}
   w = zeros(n_var)
   z_new = zeros(n_obs)
   z_old = zeros(n_obs)
-  r = init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI, b, H, q, h, lambda)
+  end
+  @timeit QREGTimer "init recurrences" r = init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI, b, H, q, h, lambda)
 
   # Iterate the algorithm map
   iter = 1
-  converged = norm(g) <= gtol
+  @timeit QREGTimer "check convergence" converged = norm(g) <= gtol
 
   while !converged && (iter < maxiter)
     iter += 1
 
     # Compute dₙ₊₁ = dₙ - (2h)⁻¹D⁻¹ Aᵀ (A dₙ + zₙ - zₙ₋₁)
-    ldiv!(H, w)
-    @. d = d - inv(T(2*h)) * w
+    @timeit QREGTimer "compute dₙ₊₁" begin
+    @timeit QREGTimer "solve H⋅w = y" ldiv!(H, w)
+    @timeit QREGTimer "axpy!" @. d = d - inv(T(2*h)) * w
+    end
 
     # Update coefficients
-    @. x = x + d
+    @timeit QREGTimer "compute xₙ₊₁" @. x = x + d
 
     # Compute rₙ₊₁ = rₙ - A dₙ₊₁
-    mul!(u, A, d)
-    @. r = r - u
+    @timeit QREGTimer "compute rₙ₊₁" begin
+    @timeit QREGTimer "A⋅dₙ₊₁" mul!(u, A, d)
+    @timeit QREGTimer "axpy!" @. r = r - u
+    end
 
     # Compute zₙ₊₁ = prox[h|⋅|](rₙ₊₁)
-    prox_abs!(z_new, r, h)
+    @timeit QREGTimer "compute zₙ₊₁" prox_abs!(z_new, r, h)
 
     # Compute A dₙ₊₁ + zₙ₊₁ - zₙ
-    @. v = u + z_new - z_old
+    @timeit QREGTimer "compute gₙ₊₁" begin
+    @timeit QREGTimer "axpy! × 2" @. v = u + z_new - z_old
 
     # Compute Aᵀ (A dₙ₊₁ + zₙ₊₁ - zₙ) and -∇ₙ₊₁
-    mul!(w, transpose(A), v)
-    @. g = g - inv(T(2*h)) * w  # assumes g is always -∇
-    converged = norm(g) <= gtol
+    @timeit QREGTimer "Aᵀv" mul!(w, transpose(A), v)
+    @timeit QREGTimer "axpy!" @. g = g - inv(T(2*h)) * w  # assumes g is always -∇
+    end
+    @timeit QREGTimer "check convergence" converged = norm(g) <= gtol
 
     # don't copy, swap'em
-    z_new, z_old = z_old, z_new
+    @timeit QREGTimer "buffer swap" z_new, z_old = z_old, z_new
   end
 
+  @timeit QREGTimer "summary" begin
   stats = (
     iterations = iter,
     converged = converged,
@@ -212,6 +258,7 @@ function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}
     rnorm = norm(r),
     gnorm = norm(g),
   )
+  end
 
   return x, r, stats
 end

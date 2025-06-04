@@ -3,6 +3,7 @@ module ParallelLeastSquares
 using BlockArrays
 using LinearAlgebra, Statistics
 using IterativeSolvers
+using TimerOutputs
 
 import Base: getindex, size, eltype, view
 import LinearAlgebra: issymmetric, mul!, ldiv!, *
