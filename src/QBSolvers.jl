@@ -6,6 +6,7 @@ using IterativeSolvers
 using DecisionTree: Ensemble, Root, Node, LeafOrNode,
   build_stump, apply_tree, apply_adaboost_stumps,
   mk_rng, load_data
+using TimerOutputs
 
 import Base: getindex, size, eltype, view
 import Base: iterate, length, last, isdone, IteratorEltype

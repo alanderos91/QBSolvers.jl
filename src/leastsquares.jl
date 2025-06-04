@@ -1,20 +1,26 @@
+const OLSTimer = TimerOutput()
+disable_timer!(OLSTimer)
+
 ###
 ### Initialization
 ###
 
 function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, H, lambda)
   # Initialize the difference, d₁ = x₁ - x₀
+  global OLSTimer
   T = eltype(AtApI)
   A = AtApI.A
+  @timeit OLSTimer "compute -∇₀" begin
   mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
   mul!(g, transpose(A), b, one(T), -one(T))
+  end
 
-  ldiv!(d, H, g) # d₁ = H⁻¹(-∇₀)
-  @. x = x + d   # x₁ = x₀ + d₁
+  @timeit OLSTimer "compute d₁" ldiv!(d, H, g) # d₁ = H⁻¹(-∇₀)
+  @timeit OLSTimer "compute x₁" @. x = x + d   # x₁ = x₀ + d₁
 
   # Current negative gradient, -∇₁
-  mul!(w, AtApI, d) # (AᵀA+λI) d₁
-  @. g = g - w      # -∇₁ = -∇₀ - (AᵀA+λI) d₁
+  @timeit "w = (AᵀA+λI)d₁" mul!(w, AtApI, d) # (AᵀA+λI) d₁
+  @timeit "compute g₁"     @. g = g - w      # -∇₁ = -∇₀ - (AᵀA+λI) d₁
 
   return nothing
 end
@@ -31,6 +37,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
   kwargs...
 ) where T
   #
+  global OLSTimer; enable_timer!(OLSTimer); reset_timer!(OLSTimer)
   n_obs, n_var = size(A)
   var_per_blk = cld(n_var, n_blk)
 
@@ -38,50 +45,66 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
   @assert var_per_blk > 0
   @assert lambda >= 0
 
+  @timeit OLSTimer "init AtA + λI; gram=$(gram)" begin
   AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
+  end
 
-  if var_per_blk > 1
+  results = if var_per_blk > 1
     #
     # Block Diagonal Hessian
     #
     if use_qub && normalize
+      @timeit OLSTimer "BlkDiag QUB; normalize=true" begin
       let
-        AtA0 = NormalizedGramPlusDiag(AtA)
+        @timeit OLSTimer "normalize" AtA0 = NormalizedGramPlusDiag(AtA)
+        @timeit OLSTimer "BlkDiag J" begin
         J = compute_block_diagonal(AtA0, n_blk;
           alpha   = one(T),
           beta    = zero(T),
           factor  = false,
           gram    = n_obs > var_per_blk
         )
-        rho = estimate_spectral_radius(AtA0, J, maxiter=3)
+        end
+        @timeit OLSTimer "spectral radius" rho = estimate_spectral_radius(AtA0, J, maxiter=3)
+        @timeit OLSTimer "Hessian; BlkDiag + Rank-1" begin
         S = Diagonal(@. rho*AtA0.A.scale^2 + lambda)
         @. AtA0.A.scale = 1 # need J̃ = √S⋅J⋅√S + ρS + λ = ZᵀZ + ρS + λ
         J̃ = update_factors!(J, AtA0.A, S, one(T), one(T))
         H = BlkDiagPlusRank1(n_obs, n_var, J̃, AtA0.A.shift, one(T), T(n_obs))
-        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+        end
+        @timeit OLSTimer "OLS loop" _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
       end
     elseif use_qub
+      @timeit OLSTimer "BlkDiag QUB; normalize=false" begin
       let
+        @timeit OLSTimer "BlkDiag J" begin
         J = compute_block_diagonal(AtA, n_blk;
           alpha   = one(T),
           beta    = zero(T),
           factor  = false,
           gram    = n_obs > var_per_blk
         )
-        rho = estimate_spectral_radius(AtA, J, maxiter=3)
-        H = update_factors!(J, one(T), lambda + rho)
-        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+        end
+        @timeit OLSTimer "spectral radius" rho = estimate_spectral_radius(AtA, J, maxiter=3)
+        @timeit OLSTimer "Hessian; BlkDiag" H = update_factors!(J, one(T), lambda + rho)
+        @timeit OLSTimer "OLS loop" _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
       end
     else
+      @timeit OLSTimer "BlkDiag Jensen" begin
       let
+        @timeit OLSTimer "Hessian; BlkDiag" begin
         H = compute_block_diagonal(AtA, n_blk;
           alpha   = T(n_blk),
           beta    = T(lambda),
           factor  = true,
           gram    = n_obs > var_per_blk
         )
-        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+        end
+        @timeit OLSTimer "OLS loop" _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
       end
     end
   else
@@ -89,30 +112,45 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
     # Diagonal (Plus Rank-1) Hessian
     #
     if use_qub && normalize
+      @timeit OLSTimer "Diag QUB; normalize=true" begin
       let
-        AtA0 = NormalizedGramPlusDiag(AtA)
-        J = compute_main_diagonal(AtA0.A, AtA0.AtA)
-        rho = estimate_spectral_radius(AtA0, J, maxiter=3)
+        @timeit OLSTimer "normalize" AtA0 = NormalizedGramPlusDiag(AtA)
+        @timeit OLSTimer "Diag J" J = compute_main_diagonal(AtA0.A, AtA0.AtA)
+        @timeit OLSTimer "spectral radius" rho = estimate_spectral_radius(AtA0, J, maxiter=3)
+        @timeit OLSTimer "Hessian; Diag + Rank-1" begin
         @. J.diag = (1+rho)*AtA0.A.scale^2 + T(lambda)
         H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
-        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+        end
+        @timeit OLSTimer "OLS loop" _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
       end
     elseif use_qub
+      @timeit OLSTimer "Diag QUB; normalize=false" begin
       let
-        J = compute_main_diagonal(AtA.A, AtA.AtA)
-        rho = estimate_spectral_radius(AtA, J, maxiter=3)
+        @timeit OLSTimer "Diag J" J = compute_main_diagonal(AtA.A, AtA.AtA)
+        @timeit OLSTimer "spectral radius" rho = estimate_spectral_radius(AtA, J, maxiter=3)
+        @timeit OLSTimer "Hessian; Diag" begin
         H = J
         @. H.diag = H.diag + rho + lambda
-        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+        end
+        @timeit OLSTimer "OLS loop" _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
       end
     else
+      @timeit OLSTimer "Diag Jensen" begin
       let
+        @timeit OLSTimer "Hessian; Diag" begin
         H = compute_main_diagonal(AtA.A, AtA.AtA)
         @. H.diag = n_blk*H.diag + lambda
-        _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+        end
+        @timeit OLSTimer "OLS loop" _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
+      end
       end
     end
   end
+  disable_timer!(OLSTimer)
+  display(OLSTimer)
+  return results
 end
 
 function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}, lambda::T;
@@ -120,40 +158,50 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T},
   gtol::Float64 = 1e-3,
 ) where T
   #
+  global OLSTimer
   A = AtApI.A
   n_var = size(A, 2)
 
   # Main matrices and vectors
+  @timeit OLSTimer "init workspace" begin
   x = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
   w = zeros(n_var)
   init_recurrences!(d, x, g, w, AtApI, b, H, lambda)
+  end
 
   # Iterate the algorithm map
   iter = 1
-  converged = norm(g) <= gtol
+  @timeit OLSTimer "check convergence" converged = norm(g) <= gtol
 
   while !converged && (iter < maxiter)
     iter += 1
 
     # Update difference dₙ₊₁ = [I - H⁻¹(AᵀA+λI)] dₙ
-    ldiv!(H, w)
-    @. d = d - w
+    @timeit OLSTimer "compute dₙ₊₁" begin
+    @timeit OLSTimer "solve H⋅w = y" ldiv!(H, w)
+    @timeit OLSTimer "axpy!" @. d = d - w
+    end
 
     # Update coefficients
-    @. x = x + d
+    @timeit OLSTimer "compute xₙ₊₁" @. x = x + d
 
     # Compute (AᵀA+λI) dₙ₊₁ and -∇ₙ₊₁
-    mul!(w, AtApI, d)
-    @. g = g - w      # assumes g is always -∇
-    converged = norm(g) <= gtol
+    @timeit OLSTimer "compute gₙ₊₁" begin
+    @timeit OLSTimer "w = (AᵀA+λI)dₙ₊₁" mul!(w, AtApI, d)
+    @timeit OLSTimer "axpy!" @. g = g - w      # assumes g is always -∇
+    end
+    @timeit OLSTimer "check convergence" converged = norm(g) <= gtol
   end
 
   # final residual
+  @timeit OLSTimer "compute residual" begin
   r = copy(b)
   mul!(r, A, x, -1.0, 1.0)
+  end
 
+  @timeit OLSTimer "summary" begin
   stats = (
     iterations = iter,
     converged = converged,
@@ -161,7 +209,7 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T},
     rnorm = norm(r),
     gnorm = norm(g),
   )
-
+  end
   return x, r, stats
 end
 
@@ -172,6 +220,7 @@ function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T};
   kwargs...
 ) where T
   #
+  global OLSTimer; enable_timer!(OLSTimer); reset_timer!(OLSTimer)
   n_obs, n_var = size(A)
   # var_per_blk = cld(n_var, n_blk)
 
@@ -179,23 +228,32 @@ function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T};
   # @assert var_per_blk > 0
   @assert lambda >= 0
 
+  @timeit OLSTimer "init AtA + λI; gram=$(gram)" begin
   AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
+  end
 
-  if precond == :none
+  results = if precond == :none
     let
       D = I
-      _solve_OLS_lbfgs(AtApI, D, b, x0, lambda; kwargs...)
+      @timeit OLSTimer "OLS loop" _solve_OLS_lbfgs(AtApI, D, b, x0, lambda; kwargs...)
     end
   elseif precond == :qub
+    @timeit OLSTimer "Diag QUB; normalize=false" begin
     let
-      J = compute_main_diagonal(AtA.A, AtA.AtA)
-      rho = estimate_spectral_radius(AtA, J, maxiter=3)
-      D = J
-      @. D.diag = D.diag + rho + lambda
-      _solve_OLS_lbfgs(AtApI, D, b, x0, lambda; kwargs...)
+      @timeit OLSTimer "Diag J" J = compute_main_diagonal(AtA.A, AtA.AtA)
+      @timeit OLSTimer "spectral radius" rho = estimate_spectral_radius(AtA, J, maxiter=3)
+      @timeit OLSTimer "Hessian; Diag" begin
+        D = J
+        @. D.diag = D.diag + rho + lambda
+      end
+      @timeit OLSTimer "OLS loop" _solve_OLS_lbfgs(AtApI, D, b, x0, lambda; kwargs...)
+    end
     end
   end
+  disable_timer!(OLSTimer)
+  display(OLSTimer)
+  return results
 end
 
 function _solve_OLS_lbfgs(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}, lambda::T;
@@ -204,39 +262,47 @@ function _solve_OLS_lbfgs(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}
   memory::Int = 10,  
 ) where T
   #
+  global OLSTimer
   A = AtApI.A
   n_var = size(A, 2)
 
   # Main matrices and vectors
+  @timeit OLSTimer "init workspace" begin
   x = deepcopy(x0)
   d = zeros(T, n_var)
   g = zeros(T, n_var)
   w = zeros(T, n_var)
+  end
 
   # Initialize gradient
+  @timeit OLSTimer "init gradient" begin
   mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
   mul!(g, transpose(A), b, one(T), -one(T))
+  end
 
   # LBFGS workspace
-  cache = LBFGSCache{T}(n_var, memory)
+  @timeit OLSTimer "init L-BFGS cache" cache = LBFGSCache{T}(n_var, memory)
 
   # Iterate the algorithm map
   iter = 0
-  converged = norm(g) <= gtol
+  @timeit OLSTimer "check convergence" converged = norm(g) <= gtol
   alpha = one(T)
   
   while !converged && (iter < maxiter)
     iter += 1
 
     # Update the LBFGS workspace and compute the next direction
+    @timeit OLSTimer "update L-BFGS cache" begin
     iter > 1 && update!(cache, alpha, d, g)
-    compute_lbfgs_direction!(d, g, cache, D)
+    end
+    @timeit OLSTimer "compute search direction" compute_lbfgs_direction!(d, g, cache, D)
 
     # Compute (AᵀA + λI) dₙ₊₁
-    mul!(w, AtApI, d)
+    @timeit OLSTimer "w = (AᵀA+λI)dₙ₊₁" mul!(w, AtApI, d)
 
     # Backtrack to make sure we satisfy descent
     # lossₙ₊₁ = lossₙ + α²/2 (|Adₙ₊₁|² + λ|dₙ₊₁|²) + α (∇ₙᵀdₙ₊₁)
+    @timeit OLSTimer "backtracking linesearch" begin
     alpha = one(T)
     loss_1 = 1//2 * dot(d, w) # 1/2 [|Adₙ₊₁|² + λ|dₙ₊₁|²]
     loss_2 = -dot(g, d)       # ∇ₙᵀdₙ₊₁
@@ -244,20 +310,30 @@ function _solve_OLS_lbfgs(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}
     while (alpha*alpha*loss_1 + alpha*loss_2 > 0)
       alpha = 1//2 * alpha
     end
+    end
+    @timeit OLSTimer "compute xₙ₊₁" begin
     @. x = x + alpha*d
+    end
 
     # Save the old gradient
+    @timeit OLSTimer "save prev gradient" begin
     @. cache.q = g
+    end
 
     # Update -∇ₙ₊₁ = -∇ₙ - α (AᵀA + λI) dₙ₊₁
+    @timeit OLSTimer "update gradient" begin
     @. g = g - alpha*w
-    converged = norm(g) <= gtol
+    end
+    @timeit OLSTimer "check convergence" converged = norm(g) <= gtol
   end
 
   # final residual
+  @timeit OLSTimer "compute residual" begin
   r = copy(b)
   mul!(r, A, x, -1.0, 1.0)
+  end
 
+  @timeit OLSTimer "summary" begin
   stats = (
     iterations = iter,
     converged = converged,
@@ -265,7 +341,7 @@ function _solve_OLS_lbfgs(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}
     rnorm = norm(r),
     gnorm = norm(g),
   )
-
+  end
   return x, r, stats
 end
 
