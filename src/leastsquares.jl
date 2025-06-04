@@ -11,10 +11,8 @@ function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, H, lambda)
   T = eltype(AtApI)
   A = AtApI.A
   @timeit OLSTimer "compute -∇₀" begin
-  r = copy(b)
-  mul!(r, A, x, -one(T), one(T))  # r = b - A⋅x
-  mul!(g, transpose(A), r)        # -∇₀ = Aᵀ⋅r - λx
-  !iszero(lambda) && axpy!(-T(lambda), x, g)
+  mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
+  mul!(g, transpose(A), b, one(T), -one(T))
   end
 
   @timeit OLSTimer "compute d₁" ldiv!(d, H, g) # d₁ = H⁻¹(-∇₀)
@@ -24,7 +22,7 @@ function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, H, lambda)
   @timeit "w = (AᵀA+λI)d₁" mul!(w, AtApI, d) # (AᵀA+λI) d₁
   @timeit "compute g₁"     @. g = g - w      # -∇₁ = -∇₀ - (AᵀA+λI) d₁
 
-  return r
+  return nothing
 end
 
 ###
@@ -171,7 +169,7 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T},
   g = zeros(n_var)
   w = zeros(n_var)
   end
-  @timeit OLSTimer "init recurrences" r = init_recurrences!(d, x, g, w, AtApI, b, H, lambda)
+  @timeit OLSTimer "init recurrences" init_recurrences!(d, x, g, w, AtApI, b, H, lambda)
 
   # Iterate the algorithm map
   iter = 1
@@ -199,7 +197,7 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T},
 
   # final residual
   @timeit OLSTimer "compute residual" begin
-  copyto!(r, b)
+  r = copy(b)
   mul!(r, A, x, -1.0, 1.0)
   end
 

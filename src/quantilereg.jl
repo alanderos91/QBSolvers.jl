@@ -174,7 +174,7 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
       @timeit QREGTimer "Diag QLB; normalize=false" begin
       let
         @timeit QREGTimer "Diag J" J = compute_main_diagonal(AtA.A, AtA.AtA)
-        @timeit QREGTimer "spectral radius" @time rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        @timeit QREGTimer "spectral radius" rho = estimate_spectral_radius(AtA, J, maxiter=1)
         @timeit QREGTimer "Hessian; Diag" begin
         H = J
         @. H.diag = H.diag + rho + lambda
