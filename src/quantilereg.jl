@@ -143,8 +143,8 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
       end
     else
       let
-        @time J = compute_main_diagonal(AtA.A, AtA.AtA)
-        @time rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        J = compute_main_diagonal(AtA.A, AtA.AtA)
+        rho = estimate_spectral_radius(AtA, J, maxiter=1)
         H = J
         @. H.diag = H.diag + rho + lambda
         _solve_QREG_loop(AtApI, H, b, x0, q, h, T(lambda); kwargs...)
