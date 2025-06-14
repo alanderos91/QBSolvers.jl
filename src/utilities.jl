@@ -152,3 +152,194 @@ function maybe_normalize!(data, C::NormalizedMatrix)
   rdiv!(data, Diagonal(C.scale))
   return data # AtApD = S⁻¹(AᵀA - nāāᵀ)S⁻¹
 end
+
+#
+# Simulation
+#
+abstract type AbstractCorrelation end
+
+struct Exchangeable{T} <: AbstractCorrelation
+  ρ::T
+end
+
+function get_corr(o::Exchangeable{T}, i, j) where T
+  if i == j
+    one(T)
+  else
+    T(o.ρ)
+  end
+end
+
+struct AutoRegressive{T} <: AbstractCorrelation
+  ρ::T
+end
+
+function get_corr(o::AutoRegressive{T}, i, j) where T
+  if i == j
+    one(T)
+  else
+    o.ρ^abs(i-j)
+  end
+end
+
+function fill_noise!(rng, Σ::DenseMatrix{T}, m, epsilon, verynoisy) where T
+  n = size(Σ, 1)
+  ϵ = T(epsilon)
+  fill!(Σ, zero(T))
+  if ϵ > 0
+    if verynoisy
+      α = sin.(π/2*rand(rng, n)) .^ 2
+      @. α = 2*(α - 0.5)
+      U = Matrix{T}(undef, m+1, n)
+      @. U[1,:] = α
+      @views begin
+        randn!(rng, U[2:end,:])
+        for (j, u) in enumerate(eachcol(U[2:end,:]))
+          normalize!(u)
+          @. u = sqrt(1 - abs2(α[j])) * u
+        end
+      end
+    else
+      U = randn(rng, T, m, n)
+      foreach(normalize!, eachcol(U))
+    end
+    BLAS.syrk!('U', 'T', ϵ, U, zero(T), Σ)
+    @views Σ[diagind(Σ)] .= zero(T)
+  end
+  return Σ
+end
+
+function add_structure!(Σ, corr_spec)
+  for j in axes(Σ, 2), i in axes(Σ, 1)
+    if i <= j
+      Σ[i,j] += get_corr(corr_spec, i, j)
+    end
+  end
+  return Σ
+end
+
+function add_structure!(Σ, corr_spec, baxes, k, l)
+  for j in axes(Σ, 2), i in axes(Σ, 1)
+    # need indices in parent array
+    ii = view(baxes, Block(k))[i]
+    jj = view(baxes, Block(l))[j]
+    Σ[i,j] += get_corr(corr_spec, ii, jj)
+  end
+  return Σ
+end
+
+function simulate_corr_matrix(::Type{T}, corr_spec, n; kwargs...) where T <: Real
+  simulate_corr_matrix!(Matrix{T}(undef, n, n), corr_spec; kwargs...)
+end
+
+function simulate_corr_matrix!(Σ, corr_spec::AbstractCorrelation;
+  m::Integer        = 3,
+  epsilon::Real     = 0.0,
+  rng::AbstractRNG  = Random.default_rng(),
+  verynoisy::Bool   = false,
+  kwargs...
+)
+  @assert size(Σ, 1) == size(Σ, 2)
+  validate_parameters(corr_spec, epsilon)
+
+  # Initialize with noise, ϵUᵀU
+  fill_noise!(rng, Σ, m, epsilon, verynoisy)
+
+  # Add correlation structure, Σ⁰
+  add_structure!(Σ, corr_spec)
+
+  # Now have Σ = Σ⁰ + ϵ(UᵀU - I)
+  return Symmetric(Σ, :U)
+end
+
+function simulate_group_corr_matrix(::Type{T}, corr_spec::Vector{S}, n, blksizes; kwargs...) where {T <: Real, S <: AbstractCorrelation}
+  simulate_group_corr_matrix!(Matrix{T}(undef, n, n), corr_spec, blksizes; kwargs...)
+end
+
+function simulate_group_corr_matrix!(Σ, corr_spec::Vector{<:Exchangeable}, blksizes::Vector{<:Integer};
+  m::Integer        = 3,
+  epsilon::Real     = 0.0,
+  delta::Real       = 0.0,
+  rng::AbstractRNG  = Random.default_rng(),
+  verynoisy::Bool   = false,
+  kwargs...
+)
+  @assert size(Σ, 1) == size(Σ, 2)
+  @assert sum(blksizes) == size(Σ, 1)
+  validate_parameters(corr_spec, epsilon, delta)
+
+  # Initialize with noise, ϵUᵀU
+  fill_noise!(rng, Σ, m, epsilon, verynoisy)
+
+  # Add correlation structure, Σ⁰
+  Σblk = BlockedArray(Σ, blksizes, blksizes)
+  nblk = length(blksizes)
+  baxes = axes(Σblk, 1)
+  for i in 1:nblk, j in 1:nblk
+    Σ_ij = view(Σblk, Block(i), Block(j))
+    if i == j
+      add_structure!(Σ_ij, corr_spec[i], baxes, i, i)
+    elseif i < j
+      delta > 0 && add_structure!(Σ_ij, Exchangeable(delta), baxes, i, j)
+    end
+  end
+
+  # Now have Σ = Σ⁰ + ϵ(UᵀU - I)
+  return Symmetric(Σ, :U)
+end
+
+function simulate_group_corr_matrix!(Σ, corr_spec::Vector{<:AutoRegressive}, blksizes::Vector{<:Integer};
+  m::Integer        = 3,
+  epsilon::Real     = 0.0,
+  rng::AbstractRNG  = Random.default_rng(),
+  verynoisy::Bool   = false,
+  kwargs...
+)
+  @assert size(Σ, 1) == size(Σ, 2)
+  @assert sum(blksizes) == size(Σ, 1)
+  validate_parameters(corr_spec, epsilon)
+
+  # Initialize with noise, ϵUᵀU
+  fill_noise!(rng, Σ, m, epsilon, verynoisy)
+
+  # Add correlation structure, Σ⁰
+  Σblk = BlockedArray(Σ, blksizes, blksizes)
+  for i in eachindex(blksizes)
+    Σ_ii = view(Σblk, Block(i), Block(i))
+    add_structure!(Σ_ii, corr_spec[i])
+  end
+
+  # Now have Σ = Σ⁰ + ϵ(UᵀU - I)
+  return Symmetric(Σ, :U)
+end
+
+function validate_parameters(corr_spec::Exchangeable, ϵ)
+  ρ = corr_spec.ρ
+  @assert 0 ≤ ρ < 1
+  @assert 0 ≤ ϵ < 1-ρ
+  return nothing
+end
+
+function validate_parameters(corr_spec::AutoRegressive, ϵ)
+  ρ = corr_spec.ρ
+  @assert 0 ≤ ρ < 1
+  @assert 0 ≤ ϵ < (1-ρ)/(1+ρ)
+  return nothing
+end
+
+function validate_parameters(corr_spec::Vector{<:Exchangeable}, ϵ, δ)
+  f = Base.Fix2(getproperty, :ρ)
+  ρmin, ρmax = extrema(f(o) for o in corr_spec)
+  @assert all(o -> 0 ≤ f(o) < 1, corr_spec)
+  @assert 0 ≤ δ < ρmin
+  @assert 0 ≤ ϵ < 1-ρmax
+  return nothing
+end
+
+function validate_parameters(corr_spec::Vector{<:AutoRegressive}, ϵ)
+  f = Base.Fix2(getproperty, :ρ)
+  ρmax = maximum(f(o) for o in corr_spec)
+  @assert all(o -> 0 ≤ f(o) < 1, corr_spec)
+  @assert 0 ≤ ϵ < (1-ρmax)/(1+ρmax)
+  return nothing
+end

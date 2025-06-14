@@ -1,7 +1,7 @@
 module ParallelLeastSquares
 
 using BlockArrays
-using LinearAlgebra, Statistics
+using LinearAlgebra, Statistics, Random
 using IterativeSolvers
 
 import Base: getindex, size, eltype, view
@@ -22,6 +22,7 @@ _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)
 
 # Other helpful abstractions
 include("utilities.jl")
+export simulate_corr_matrix, simulate_group_corr_matrix, Exchangeable, AutoRegressive
 
 # Problems
 include("leastsquares.jl")
