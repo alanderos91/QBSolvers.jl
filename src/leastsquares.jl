@@ -55,7 +55,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
           factor  = false,
           gram    = n_obs > var_per_blk
         )
-        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        rho = estimate_spectral_radius(AtA0, J, maxiter=3)
         S = Diagonal(@. rho*AtA0.A.scale^2 + lambda)
         @. AtA0.A.scale = 1 # need J̃ = √S⋅J⋅√S + ρS + λ = ZᵀZ + ρS + λ
         J̃ = update_factors!(J, AtA0.A, S, one(T), one(T))
@@ -70,7 +70,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
           factor  = false,
           gram    = n_obs > var_per_blk
         )
-        rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        rho = estimate_spectral_radius(AtA, J, maxiter=3)
         H = update_factors!(J, one(T), lambda + rho)
         _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
       end
@@ -93,7 +93,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
       let
         AtA0 = NormalizedGramPlusDiag(AtA)
         J = compute_main_diagonal(AtA0.A, AtA0.AtA)
-        rho = estimate_spectral_radius(AtA0, J, maxiter=1)
+        rho = estimate_spectral_radius(AtA0, J, maxiter=3)
         @. J.diag = (1+rho)*AtA0.A.scale^2 + T(lambda)
         H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
         _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
@@ -101,7 +101,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
     elseif use_qlb
       let
         J = compute_main_diagonal(AtA.A, AtA.AtA)
-        rho = estimate_spectral_radius(AtA, J, maxiter=1)
+        rho = estimate_spectral_radius(AtA, J, maxiter=3)
         H = J
         @. H.diag = H.diag + rho + lambda
         _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)

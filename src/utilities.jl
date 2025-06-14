@@ -2,8 +2,8 @@
 # Spectral radius of AtA - J, where J is (block) diagonal Matrix based on AtA.
 #
 function estimate_spectral_radius(AtA, J; kwargs...)
-  rho, _, ch = powm!(GramMinusBlkDiag(AtA, J), ones(size(J, 1)); log=true, kwargs...)
-  return rho
+  lambda, _, ch = powm!(GramMinusBlkDiag(AtA, J), ones(size(J, 1)); log=true, kwargs...)
+  return abs(lambda)
 end
 
 #
