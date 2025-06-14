@@ -1,7 +1,7 @@
 ###
 ### usage:
 ###
-### julia -t 1 OLS.jl 8192 2048 0 1903 > GQLB_8192x2048_1903.out
+### julia -t 1 OLS.jl 8192 2048 0 1903 blkdiag false 16
 ###
 
 using Pkg, InteractiveUtils
@@ -12,9 +12,10 @@ end
 
 Pkg.activate(pwd())
 Pkg.instantiate()
+include("utilities.jl")
 
 using ParallelLeastSquares
-using LinearAlgebra, Statistics, Random
+using Distributions, LinearAlgebra, Statistics, Random
 using BenchmarkTools, DataFrames, PrettyTables
 
 BLAS.set_num_threads(10)
@@ -24,13 +25,14 @@ Pkg.status(); println()
 versioninfo(); println()
 BLAS.get_config() |> display; println()
 
-function main(n, p, λ, seed)
+function main(n, p, λ, seed, corrtype, use_noise, ngroups)
   iszero(λ) && @assert n > p
   @assert p > 2^7
 
+  # benchmark parameters
   N = 1000 # number of @benchmark samples
   Random.seed!(seed)
-  maxiter = 10^4
+  maxiter = 2*10^3
 
   results = DataFrame(
     n=Int[],
@@ -46,10 +48,15 @@ function main(n, p, λ, seed)
     gnorm=Float64[],
   )
 
-  A = randn(n, p)
+  # create problem instance
+  Σ = make_Σ(corrtype, p, use_noise, ngroups)
+  A = Transpose(rand(MvNormal(zeros(p), Σ), n)) |> Matrix
   x = ones(p)
   b = A*x + 1/p .* randn(n)
   x0 = zeros(p)
+  println("Condition number of A: ", cond(A))
+  println("Number of blocks in Σ: ", corrtype == "blkdiag" || corrtype == "blkband" ? ngroups : 1)
+  println()
 
   # LSMR
   _, _, statsLSMR = solve_OLS_lsmr(A, b; lambda=λ)
@@ -127,8 +134,11 @@ function main(n, p, λ, seed)
   return nothing
 end
 
-n = parse(Int, ARGS[1])
-p = parse(Int, ARGS[2])
-λ = parse(Float64, ARGS[3])
-seed = parse(Int, ARGS[4])
-main(n, p, λ, seed)
+n         = parse(Int, ARGS[1])
+p         = parse(Int, ARGS[2])
+λ         = parse(Float64, ARGS[3])
+seed      = parse(Int, ARGS[4])
+corrtype  = ARGS[5]
+use_noise = parse(Bool, ARGS[6])
+ngroups   = parse(Int, ARGS[7])
+main(n, p, λ, seed, corrtype, use_noise, ngroups)

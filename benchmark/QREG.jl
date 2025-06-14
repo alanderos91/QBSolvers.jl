@@ -1,8 +1,7 @@
 ###
 ### usage:
 ###
-### julia -t 1 QREG.jl 8192 2047 0.5 1903 > QREG_8192x2048_1903_q=0.5.out
-###
+### julia -t 1 QREG.jl 8192 2047 0.5 1903 blkdiag false 16
 ### NOTE: Number of variables, p, should satisfy p = 2^k-1 for some positive integer k.
 ###
 
@@ -14,6 +13,7 @@ end
 
 Pkg.activate(pwd())
 Pkg.instantiate()
+include("utilities.jl")
 
 using ParallelLeastSquares
 using LinearAlgebra, Statistics, Random, Distributions
@@ -43,13 +43,13 @@ function solve_QREG_conquer(_X, y, q, h)
   return β̂, r, iter
 end
 
-function main(n, p, q, seed)
+function main(n, p, q, seed, corrtype, use_noise, ngroups)
   @assert n >= p+1
   @assert rem(p+1, 2) == 0
 
   N = 1000      # number of @benchmark samples
   Random.seed!(seed)
-  maxiter = 10^4
+  maxiter = 2*10^3
   tscale = 1e-6 # report time in milliseconds
   tol = 1e-6    # change in objective, relative to previous value
 
@@ -70,13 +70,15 @@ function main(n, p, q, seed)
     objv2=Float64[], # uniform kernel
   )
 
-  ρ = 0.7
-  Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p]
+  Σ = make_Σ(corrtype, p, use_noise, ngroups)
   _X = Transpose(rand(MvNormal(zeros(p), Σ), n)) |> Matrix
   β = 0.1*ones(p)
   y0 =  _X * β .+ 1
   y = y0 + rand(TDist(1.5), n) .- Statistics.quantile(TDist(1.5), q)
   X = [ones(n) _X]
+  println("Condition number of X: ", cond(X))
+  println("Number of blocks in Σ: ", corrtype == "blkdiag" || corrtype == "blkband" ? ngroups : 1)
+  println()
 
   # Set bandwidth for both methods
   h = ParallelLeastSquares.default_bandwidth(X)
@@ -170,8 +172,11 @@ function main(n, p, q, seed)
   return nothing
 end
 
-n = parse(Int, ARGS[1])
-p = parse(Int, ARGS[2])
-q = parse(Float64, ARGS[3])
-seed = parse(Int, ARGS[4])
-main(n, p, q, seed)
+n         = parse(Int, ARGS[1])
+p         = parse(Int, ARGS[2])
+q         = parse(Float64, ARGS[3])
+seed      = parse(Int, ARGS[4])
+corrtype  = ARGS[5]
+use_noise = parse(Bool, ARGS[6])
+ngroups   = parse(Int, ARGS[7])
+main(n, p, q, seed, corrtype, use_noise, ngroups)
