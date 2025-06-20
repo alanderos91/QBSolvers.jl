@@ -14,12 +14,12 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 include("utilities.jl")
 
-using ParallelLeastSquares
+using QBSolvers
 using Distributions, LinearAlgebra, Statistics, Random
 using BenchmarkTools, DataFrames, PrettyTables
 
 BLAS.set_num_threads(10)
-ParallelLeastSquares.BLAS_THREADS[] = BLAS.get_num_threads()
+QBSolvers.BLAS_THREADS[] = BLAS.get_num_threads()
 
 Pkg.status(); println()
 versioninfo(); println()

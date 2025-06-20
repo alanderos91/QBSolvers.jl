@@ -1,4 +1,4 @@
-module ParallelLeastSquares
+module QBSolvers
 
 using BlockArrays
 using LinearAlgebra, Statistics, Random

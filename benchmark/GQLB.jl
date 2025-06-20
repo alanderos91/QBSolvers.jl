@@ -13,12 +13,12 @@ end
 Pkg.activate(pwd())
 Pkg.instantiate()
 
-using ParallelLeastSquares # for LSMR wrapper
+using QBSolvers # for LSMR wrapper
 using LinearAlgebra, Random, BlockArrays, BlockDiagonals, IterativeSolvers
 using DataFrames, BenchmarkTools, PrettyTables
 
 BLAS.set_num_threads(10)
-ParallelLeastSquares.BLAS_THREADS[] = BLAS.get_num_threads()
+QBSolvers.BLAS_THREADS[] = BLAS.get_num_threads()
 
 Pkg.status(); println()
 versioninfo(); println()

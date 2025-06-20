@@ -1,7 +1,7 @@
 import Pkg
 Pkg.activate(pwd())
 
-using ParallelLeastSquares
+using QBSolvers
 using Profile
 
 Profile.init(delay=1e-6)

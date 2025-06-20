@@ -1,4 +1,4 @@
-name = "ParallelLeastSquares"
+name = "QBSolvers"
 uuid = "5d646e68-7e02-4d4b-9db2-54f9f7ce8ddd"
 authors = ["Alfonso Landeros <alandero@ucr.edu>", "Seyoon Ko <kos@ucla.edu>", "Kenneth Lange <klange@ucla.edu>"]
 version = "0.1.0"

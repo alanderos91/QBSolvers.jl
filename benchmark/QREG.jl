@@ -15,16 +15,16 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 include("utilities.jl")
 
-using ParallelLeastSquares
+using QBSolvers
 using LinearAlgebra, Statistics, Random, Distributions
 using BenchmarkTools, DataFrames, PrettyTables
 import MMDeweighting
 using RCall
 
-PLS = ParallelLeastSquares
+PLS = QBSolvers
 
 BLAS.set_num_threads(10)
-ParallelLeastSquares.BLAS_THREADS[] = BLAS.get_num_threads()
+QBSolvers.BLAS_THREADS[] = BLAS.get_num_threads()
 
 Pkg.status(); println()
 versioninfo(); println()
@@ -81,7 +81,7 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
   println()
 
   # Set bandwidth for both methods
-  h = ParallelLeastSquares.default_bandwidth(X)
+  h = QBSolvers.default_bandwidth(X)
 
   # MMDeweighting
   β̂, _, iter, _ = MMDeweighting.FastQR(X, y, q; tol=tol, h=h, verbose=false)

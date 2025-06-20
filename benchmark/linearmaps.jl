@@ -1,7 +1,7 @@
 import Pkg
 Pkg.activate(pwd())
 
-using ParallelLeastSquares, IterativeSolvers
+using QBSolvers, IterativeSolvers
 using LinearAlgebra, Statistics, Random
 using BenchmarkTools
 
