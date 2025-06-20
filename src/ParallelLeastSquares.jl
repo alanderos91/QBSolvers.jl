@@ -3,6 +3,7 @@ module ParallelLeastSquares
 using BlockArrays
 using LinearAlgebra, Statistics, Random
 using IterativeSolvers
+using DecisionTree: Ensemble, Root, Node, LeafOrNode, build_stump, apply_tree, mk_rng, load_data
 
 import Base: getindex, size, eltype, view
 import LinearAlgebra: issymmetric, mul!, ldiv!, *
@@ -30,5 +31,8 @@ export solve_OLS, solve_OLS_lsmr, solve_OLS_cg
 
 include("quantilereg.jl")
 export solve_QREG
+
+include("adaboost.jl")
+export fit_adaboost, fit_classifier, load_data
 
 end # module
