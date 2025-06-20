@@ -3,7 +3,9 @@ module ParallelLeastSquares
 using BlockArrays
 using LinearAlgebra, Statistics, Random
 using IterativeSolvers
-using DecisionTree: Ensemble, Root, Node, LeafOrNode, build_stump, apply_tree, mk_rng, load_data
+using DecisionTree: Ensemble, Root, Node, LeafOrNode,
+  build_stump, apply_tree, apply_adaboost_stumps,
+  mk_rng, load_data
 
 import Base: getindex, size, eltype, view
 import LinearAlgebra: issymmetric, mul!, ldiv!, *
