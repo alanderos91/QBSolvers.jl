@@ -32,13 +32,13 @@ x_init = zeros(p)
 #
 # solve it with diagonal QUB approximation (n_blk = 1)
 #
-x, r, stats = @time solve_OLS(A, b, x_init, 1; maxiter=10^3, use_qlb=true, gtol=1e-6, lambda=0.0)
+x, r, stats = @time solve_OLS(A, b, x_init, 1; maxiter=10^3, use_qub=true, gtol=1e-6, lambda=0.0)
 stats |> pairs |> display
 
 #
 # solve it with block diagonal QUB approximation (n_blk = 16)
 #
-x, r, stats = @time solve_OLS(A, b, x_init, 16; maxiter=10^3, use_qlb=true, gtol=1e-6, lambda=0.0)
+x, r, stats = @time solve_OLS(A, b, x_init, 16; maxiter=10^3, use_qub=true, gtol=1e-6, lambda=0.0)
 stats |> pairs |> display
 
 #

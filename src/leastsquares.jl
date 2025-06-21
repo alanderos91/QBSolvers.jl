@@ -26,7 +26,7 @@ end
 
 function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
   lambda::Float64 = 0.0,
-  use_qlb::Bool = false,
+  use_qub::Bool = false,
   normalize::Bool = false,
   gram::Bool = _cache_gram_heuristic_(A),
   kwargs...
@@ -46,7 +46,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
     #
     # Block Diagonal Hessian
     #
-    if use_qlb && normalize
+    if use_qub && normalize
       let
         AtA0 = NormalizedGramPlusDiag(AtA)
         J = compute_block_diagonal(AtA0, n_blk;
@@ -62,7 +62,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
         H = BlkDiagPlusRank1(n_obs, n_var, J̃, AtA0.A.shift, one(T), T(n_obs))
         _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
       end
-    elseif use_qlb
+    elseif use_qub
       let
         J = compute_block_diagonal(AtA, n_blk;
           alpha   = one(T),
@@ -89,7 +89,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
     #
     # Diagonal (Plus Rank-1) Hessian
     #
-    if use_qlb && normalize
+    if use_qub && normalize
       let
         AtA0 = NormalizedGramPlusDiag(AtA)
         J = compute_main_diagonal(AtA0.A, AtA0.AtA)
@@ -98,7 +98,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
         H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
         _solve_OLS_loop(AtApI, H, b, x0, T(lambda); kwargs...)
       end
-    elseif use_qlb
+    elseif use_qub
       let
         J = compute_main_diagonal(AtA.A, AtA.AtA)
         rho = estimate_spectral_radius(AtA, J, maxiter=3)
@@ -200,7 +200,7 @@ end
 function solve_OLS_cg(A, b;
   x0 = IterativeSolvers.zerox(A, b),
   lambda::Real=0.0,
-  use_qlb::Bool=false,
+  use_qub::Bool=false,
   gram::Bool = _cache_gram_heuristic_(A),
   kwargs...  
 )
@@ -211,7 +211,7 @@ function solve_OLS_cg(A, b;
   AtA = GramPlusDiag(A; gram=gram)
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))
 
-  if use_qlb # precondition with QLB matrix
+  if use_qub # precondition with QUB matrix
     D = compute_main_diagonal(AtA.A, AtA.AtA)
     rho = estimate_spectral_radius(AtA, D, maxiter=3)
     @. D.diag += lambda + rho

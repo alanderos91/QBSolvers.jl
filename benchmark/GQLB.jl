@@ -1,7 +1,7 @@
 ###
 ### usage:
 ###
-### julia -t 1 GQLB.jl 8192 2048 0 1903 > GQLB_8192x2048_1903.out
+### julia -t 1 GQUB.jl 8192 2048 0 1903 > GQUB_8192x2048_1903.out
 ###
 
 using Pkg, InteractiveUtils
@@ -153,7 +153,7 @@ function fit!(
       # mul!(view(bls.storage_p_1_blk, Block(b)), cblk[b], view(bls.storage_p_2_blk, Block(b)))
   end
   copyto!(bls.β, bls.storage_p_1)
-  # GQLB loop
+  # GQUB loop
   niters = maxiter
   for iter in 1:maxiter
       # update residul storage_p_2 = X'(y - Xβ) = X'y - X'Xβ
@@ -223,8 +223,8 @@ function main(n, p, λ, seed)
   cgtol = gnormLSMR^2
 
   # CG
-  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=false)
-  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=false)
+  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qub=false)
+  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qub=false)
   push!(results,
     (Threads.nthreads(), n, p, λ, 1, p, "CG",
       median(benchCG.times) * 1e-6, statsCG.iterations,
@@ -232,9 +232,9 @@ function main(n, p, λ, seed)
     )
   )
 
-  # CG with QLB preconditioner
-  _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=true)
-  benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=true)
+  # CG with QUB preconditioner
+  _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qub=true)
+  benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qub=true)
   push!(results,
     (Threads.nthreads(), n, p, λ, 1, p, "PCG",
       median(benchPCG.times) * 1e-6, statsPCG.iterations,
@@ -253,7 +253,7 @@ function main(n, p, λ, seed)
     benchMM = @benchmark fit($A, $b, $var_per_blk;
       λridge=$λ, maxiter=$maxiter, ∇tol=$gnormLSMR) samples=N
     push!(results,
-      (Threads.nthreads(), n, p, λ, n_blk, var_per_blk, "MM-QLB",
+      (Threads.nthreads(), n, p, λ, n_blk, var_per_blk, "MM-QUB",
         median(benchMM.times) * 1e-6, iters,
         xnormMM, rnormMM, gnormMM,
       )

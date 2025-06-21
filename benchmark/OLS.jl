@@ -71,8 +71,8 @@ function main(n, p, λ, seed, corrtype, use_noise, ngroups)
   cgtol = gnormLSMR^2
 
   # CG
-  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=false)
-  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=false)
+  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qub=false)
+  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qub=false)
   push!(results,
     (n, p, λ, 1, p, "CG",
       median(benchCG.times) * 1e-6, statsCG.iterations,
@@ -80,9 +80,9 @@ function main(n, p, λ, seed, corrtype, use_noise, ngroups)
     )
   )
 
-  # CG with QLB preconditioner
-  _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qlb=true)
-  benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qlb=true)
+  # CG with QUB preconditioner
+  _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qub=true)
+  benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qub=true)
   push!(results,
     (n, p, λ, 1, p, "PCG",
       median(benchPCG.times) * 1e-6, statsPCG.iterations,
@@ -94,9 +94,9 @@ function main(n, p, λ, seed, corrtype, use_noise, ngroups)
     n_blk = fld(p, var_per_blk)
     for normalize in (false, true)
       _, _, stats = solve_OLS(A, b, x0, n_blk;
-        lambda=λ, maxiter=maxiter, gtol=gnormLSMR, use_qlb=true, normalize=normalize)
+        lambda=λ, maxiter=maxiter, gtol=gnormLSMR, use_qub=true, normalize=normalize)
       benchMM = @benchmark solve_OLS($A, $b, $x0, $n_blk;
-        lambda=$λ, maxiter=$maxiter, gtol=$gnormLSMR, use_qlb=true, normalize=$normalize) samples=N
+        lambda=$λ, maxiter=$maxiter, gtol=$gnormLSMR, use_qub=true, normalize=$normalize) samples=N
       push!(results,
         (n, p, λ, n_blk, var_per_blk, normalize ? "QUBn" : "QUB",
           median(benchMM.times) * 1e-6, stats.iterations,

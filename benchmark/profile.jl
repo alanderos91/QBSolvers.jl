@@ -14,9 +14,9 @@ function main()
   b = A*x + 1/p .* randn(n)
   x0 = zeros(p)
 
-  solve_OLS(A, b, x0, n_blk; maxiter=maxiter, gtol=gtol, lambda=1e3, use_qlb=true, gram=false, normalize=false)
+  solve_OLS(A, b, x0, n_blk; maxiter=maxiter, gtol=gtol, lambda=1e3, use_qub=true, gram=false, normalize=false)
   Profile.clear_malloc_data()
-  solve_OLS(A, b, x0, n_blk; maxiter=maxiter, gtol=gtol, lambda=1e3, use_qlb=true, gram=false, normalize=false)
+  solve_OLS(A, b, x0, n_blk; maxiter=maxiter, gtol=gtol, lambda=1e3, use_qub=true, gram=false, normalize=false)
 
   return nothing
 end
