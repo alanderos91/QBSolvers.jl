@@ -106,7 +106,7 @@ function fit_classifier(labels::AbstractVector{S}, features::AbstractMatrix{T}, 
   sqrtWZ = Matrix{T}(undef, N, M) # buffer for constructing H
   buffer = Vector{T}(undef, M)
   ix = collect(1:M)
-  just_ones = ones(T, M)
+  const_weights = 1/M * ones(T, M)
 
   # Step 1: Generate an ensemble of M classifiers and construct Z
   f = Vector{Node{T,S}}(undef, M)
@@ -125,7 +125,6 @@ function fit_classifier(labels::AbstractVector{S}, features::AbstractMatrix{T}, 
     Z[misclassified, j] .= -1 / (K-1)^2
     Z[.!misclassified, j] .= 1 / (K-1)
   end
-  @show rank(Z)
 
   # Step 2: Provide a feasible point for classifier weights
   θ = 1/M * ones(T, M)
@@ -158,7 +157,7 @@ function fit_classifier(labels::AbstractVector{S}, features::AbstractMatrix{T}, 
 
     if update == :proj
       @. d = θ + d
-      project_simplex!(θ, d, just_ones, buffer, ix)
+      project_simplex!(θ, d, const_weights, buffer, ix)
     elseif update == :fw
       error("not implemented")
     end
@@ -184,11 +183,12 @@ function fit_classifier(labels::AbstractVector{S}, features::AbstractMatrix{T}, 
   return clf, θ, stats
 end
 
-function project_simplex!(x, y, w, z = w .* y, ix = collect(1:length(y)))
+function project_simplex!(x, y, w, z = similar(y), ix = collect(1:length(y)))
   #
   T = eltype(y)
   n = length(y)
   @. x = y
+  @. z = w * y
   p = sortperm!(ix, z, rev = true)
   (s, t, lambda) = (zero(T), zero(T), zero(T))
   for i in eachindex(x)
@@ -196,7 +196,7 @@ function project_simplex!(x, y, w, z = w .* y, ix = collect(1:length(y)))
     s = s + 1 / w[j]
     t = t + y[j]
     lambda = (t - 1) / s
-    if i < n && lambda < z[j] && lambda >= z[p[i]]
+    if i < n && lambda < z[j] && lambda >= z[p[i+1]]
       break
     end
   end
