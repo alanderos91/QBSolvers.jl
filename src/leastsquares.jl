@@ -166,6 +166,110 @@ function _solve_OLS_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T},
   return x, r, stats
 end
 
+function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T};
+  lambda::Float64 = 0.0,
+  precond::Symbol = :none,
+  gram::Bool = _cache_gram_heuristic_(A),
+  kwargs...
+) where T
+  #
+  n_obs, n_var = size(A)
+  # var_per_blk = cld(n_var, n_blk)
+
+  # @assert rem(n_var, n_blk) == 0
+  # @assert var_per_blk > 0
+  @assert lambda >= 0
+
+  AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
+  AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
+
+  if precond == :none
+    let
+      D = I
+      _solve_OLS_lbfgs(AtApI, D, b, x0, lambda; kwargs...)
+    end
+  elseif precond == :qub
+    let
+      J = compute_main_diagonal(AtA.A, AtA.AtA)
+      rho = estimate_spectral_radius(AtA, J, maxiter=3)
+      D = J
+      @. D.diag = D.diag + rho + lambda
+      _solve_OLS_lbfgs(AtApI, D, b, x0, lambda; kwargs...)
+    end
+  end
+end
+
+function _solve_OLS_lbfgs(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}, lambda::T;
+  maxiter::Int = 100,
+  gtol::Float64 = 1e-3,
+  memory::Int = 10,  
+) where T
+  #
+  A = AtApI.A
+  n_var = size(A, 2)
+
+  # Main matrices and vectors
+  x = deepcopy(x0)
+  d = zeros(T, n_var)
+  g = zeros(T, n_var)
+  w = zeros(T, n_var)
+
+  # Initialize gradient
+  mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
+  mul!(g, transpose(A), b, one(T), -one(T))
+  !iszero(lambda) && axpy!(-T(lambda), x, g)
+
+  # LBFGS workspace
+  cache = LBFGSCache{T}(n_var, memory)
+
+  # Iterate the algorithm map
+  iter = 0
+  converged = norm(g) <= gtol
+  alpha = one(T)
+  
+  while !converged && (iter < maxiter)
+    iter += 1
+
+    # Update the LBFGS workspace and compute the next direction
+    iter > 1 && update!(cache, alpha, d, g)
+    compute_lbfgs_direction!(d, g, cache, D)
+
+    # Compute (AᵀA + λI) dₙ₊₁
+    mul!(w, AtApI, d)
+
+    # Backtrack to make sure we satisfy descent
+    # lossₙ₊₁ = lossₙ + α²/2 (|Adₙ₊₁|² + λ|dₙ₊₁|²) + α (∇ₙᵀdₙ₊₁)
+    alpha = one(T)
+    loss_1 = 1//2 * dot(d, w) # 1/2 [|Adₙ₊₁|² + λ|dₙ₊₁|²]
+    loss_2 = -dot(g, d)       # ∇ₙᵀdₙ₊₁
+    while (alpha*alpha*loss_1 + alpha*loss_2 > 0)
+      alpha = 1//2 * alpha
+    end
+    @. x = x + alpha*d
+
+    # Save the old gradient
+    @. cache.q = g
+
+    # Update -∇ₙ₊₁ = -∇ₙ - α (AᵀA + λI) dₙ₊₁
+    @. g = g - alpha*w
+    converged = norm(g) <= gtol
+  end
+
+  # final residual
+  r = copy(b)
+  mul!(r, A, x, -1.0, 1.0)
+
+  stats = (
+    iterations = iter,
+    converged = converged,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
 ###
 ### Wrappers
 ###

@@ -8,6 +8,7 @@ using DecisionTree: Ensemble, Root, Node, LeafOrNode,
   mk_rng, load_data
 
 import Base: getindex, size, eltype, view
+import Base: iterate, length, eltype, isdone, IteratorEltype
 import LinearAlgebra: issymmetric, mul!, ldiv!, *
 
 const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
@@ -29,7 +30,7 @@ export simulate_corr_matrix, simulate_group_corr_matrix, Exchangeable, AutoRegre
 
 # Problems
 include("leastsquares.jl")
-export solve_OLS, solve_OLS_lsmr, solve_OLS_cg
+export solve_OLS, solve_OLS_lbfgs, solve_OLS_lsmr, solve_OLS_cg
 
 include("quantilereg.jl")
 export solve_QREG
