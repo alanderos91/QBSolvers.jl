@@ -367,36 +367,49 @@ function LBFGSCache{T}(n_var, memory_size) where T
   return LBFGSCache(memory_size, s, y, ρ, α, q, 0, 0)
 end
 
-Base.IteratorSize(::Type{<:LBFGSCache{<:Any}}) = Base.HasLength()
+Base.IteratorSize(::Type{<:LBFGSCache}) = Base.HasLength()
 Base.length(cache::LBFGSCache) = cache.current_size
 Base.IteratorEltype(::LBFGSCache) = Base.HasEltype()
 Base.eltype(::Type{<:LBFGSCache{T}}) where {T} = T
-Base.isdone(cache::LBFGSCache, state::Int) = state > cache.current_size
+Base.isdone(cache::LBFGSCache{T}, state::Int) where T = state > cache.current_size
 
-function Base.iterate(cache::LBFGSCache, state::Int = 1)
+@inline function Base.iterate(cache::LBFGSCache{T}, state::Int = 1) where T
   if isdone(cache, state)
     return nothing
   end
+  k = mod1(cache.current_index + state, cache.current_size)
   @views begin
-    s = cache.s[:, state]
-    y = cache.y[:, state]
-    ρ = cache.ρ[state]
+    s = cache.s[:, k]
+    y = cache.y[:, k]
+    ρ = cache.ρ[k]
   end
-  return ((s, y, ρ), state + 1)
+  return ((k, s, y, ρ), state + 1)
 end
 
-Base.isdone(::Iterators.Reverse{LBFGSCache{<:Any}}, state::Int) = state < 1
+Base.isdone(rev::Iterators.Reverse{LBFGSCache{T}}, state::Int) where T = state > rev.itr.current_size
 
-function Base.iterate(rev::Iterators.Reverse{LBFGSCache{<:Any}}, state::Int = rev.itr.current_size)
+@inline function Base.iterate(rev::Iterators.Reverse{LBFGSCache{T}}, state::Int = 1) where T
   if isdone(rev, state)
     return nothing
   end
+  cache = rev.itr
+  k = mod1(cache.current_index - state + 1, cache.current_size)
   @views begin
-    s = cache.s[:, state]
-    y = cache.y[:, state]
-    ρ = cache.ρ[state]
+    s = cache.s[:, k]
+    y = cache.y[:, k]
+    ρ = cache.ρ[k]
   end
-  return ((s, y, ρ), state - 1)
+  return ((k, s, y, ρ), state + 1)
+end
+
+function getlast(cache::LBFGSCache{T}) where T
+  k = cache.current_index
+  @views begin
+    s = cache.s[:, k]
+    y = cache.y[:, k]
+    ρ = cache.ρ[k]
+  end
+  return (k, s, y, ρ)
 end
 
 function update!(cache::LBFGSCache{T}, alpha, d, g) where T
@@ -411,6 +424,8 @@ function update!(cache::LBFGSCache{T}, alpha, d, g) where T
   @. s = alpha * d
   @. y = q - g
   cache.ρ[k] = inv(dot(s, y))
+  cache.current_index = k
+  cache.current_size = m
   return nothing
 end
 
@@ -419,33 +434,44 @@ function compute_lbfgs_direction!(d, g, cache::LBFGSCache, D)
   # Check for empty cache
   #
   if cache.current_size == 0
-    return _descent_direction!(d, g, D)
+    _descent_direction!(d, g, D)
+    return d
   end
 
   #
   # Apply two-loop recursion
   #
   α, q = cache.α, cache.q
-  @. q = g
+  @. q = -g # ∇ₙ
   
-  # αₖ = ρₖ(sₖᵀ∇ₙ) and q = q - αₖyₖ, so sign is flipped here 
-  for (k, (s, y, ρ)) in enumerate(reverse(cache))
+  # αₖ = ρₖ(sₖᵀ∇ₙ) and q = q - αₖyₖ
+  for (k, s, y, ρ) in Iterators.reverse(cache)
     α[k] = ρ * dot(s, q)
-    @. q += α[k] * y
+    @. q = q - α[k] * y
   end
 
   # d = Hₖq so sign is flipped here
   _descent_direction!(d, q, D)
 
   # βₖ = ρₖ(yₖᵀd) and d = d + (αₖ-βₖ)sₖ so signs in αₖ and βₖ are flipped here
-  for (k, (s, y, ρ)) in enumerate(cache)
+  for (k, s, y, ρ) in cache
     β = ρ * dot(y, d)
-    @. d += (α[k] - β) * s
+    @. d = d + (α[k] - β) * s
   end
+  @. d = -d
 
   return d
 end
 
-_descent_direction!(d, g, ::UniformScaling) = (@. d = g)
-_descent_direction!(d, g, D::Diagonal) = ldiv!(d, D, g)
+_descent_direction!(d, q, ::UniformScaling) = (@. d = q; return nothing)
+_descent_direction!(d, q, D) = (ldiv!(d, D, q); return nothing)
+
+function _descent_direction!(d, q, ::UniformScaling, cache::LBFGSCache)
+  _, s, y, _ = getlast(cache)
+  γ = dot(s, y) / dot(y, y)
+  @. d = γ * q
+  return nothing
+end
+
+_descent_direction!(d, q, D, cache::LBFGSCache) = _descent_direction!(d, q, D)
 

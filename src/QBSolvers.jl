@@ -8,7 +8,7 @@ using DecisionTree: Ensemble, Root, Node, LeafOrNode,
   mk_rng, load_data
 
 import Base: getindex, size, eltype, view
-import Base: iterate, length, eltype, isdone, IteratorEltype
+import Base: iterate, length, last, isdone, IteratorEltype
 import LinearAlgebra: issymmetric, mul!, ldiv!, *
 
 const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
