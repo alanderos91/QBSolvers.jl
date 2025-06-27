@@ -343,3 +343,109 @@ function validate_parameters(corr_spec::Vector{<:AutoRegressive}, ϵ)
   @assert 0 ≤ ϵ < (1-ρmax)/(1+ρmax)
   return nothing
 end
+
+#
+# L-BFGS Cache
+#
+mutable struct LBFGSCache{T}
+  memory_size::Int
+  s::Matrix{T}  # stores xₙ₊₁ - xₙ
+  y::Matrix{T}  # stores gₙ - gₙ₊₁; we define gₙ ≡ -∇ₙ
+  ρ::Vector{T}  # stores (yₖᵀsₖ)⁻¹
+  α::Vector{T}  # stores ρₖ (sₖᵀgₙ); we define gₙ ≡ -∇ₙ
+  q::Vector{T}  # same dimensions as gₙ
+  current_size::Int   # not to exceed memory_size
+  current_index::Int  # points to column with latest update
+end
+
+function LBFGSCache{T}(n_var, memory_size) where T
+  s = zeros(T, n_var, memory_size)
+  y = zeros(T, n_var, memory_size)
+  ρ = zeros(T, memory_size)
+  α = zeros(T, memory_size)
+  q = zeros(T, n_var)
+  return LBFGSCache(memory_size, s, y, ρ, α, q, 0, 0)
+end
+
+Base.IteratorSize(::Type{<:LBFGSCache{<:Any}}) = Base.HasLength()
+Base.length(cache::LBFGSCache) = cache.current_size
+Base.IteratorEltype(::LBFGSCache) = Base.HasEltype()
+Base.eltype(::Type{<:LBFGSCache{T}}) where {T} = T
+Base.isdone(cache::LBFGSCache, state::Int) = state > cache.current_size
+
+function Base.iterate(cache::LBFGSCache, state::Int = 1)
+  if isdone(cache, state)
+    return nothing
+  end
+  @views begin
+    s = cache.s[:, state]
+    y = cache.y[:, state]
+    ρ = cache.ρ[state]
+  end
+  return ((s, y, ρ), state + 1)
+end
+
+Base.isdone(::Iterators.Reverse{LBFGSCache{<:Any}}, state::Int) = state < 1
+
+function Base.iterate(rev::Iterators.Reverse{LBFGSCache{<:Any}}, state::Int = rev.itr.current_size)
+  if isdone(rev, state)
+    return nothing
+  end
+  @views begin
+    s = cache.s[:, state]
+    y = cache.y[:, state]
+    ρ = cache.ρ[state]
+  end
+  return ((s, y, ρ), state - 1)
+end
+
+function update!(cache::LBFGSCache{T}, alpha, d, g) where T
+  k, m, memory_size = cache.current_index, cache.current_size, cache.memory_size
+  k = mod1(k+1, memory_size)
+  m = min(m + 1, memory_size)
+  q = cache.q # assumed to have previous negative gradient
+  @views begin
+    s = cache.s[:, k]
+    y = cache.y[:, k]
+  end
+  @. s = alpha * d
+  @. y = q - g
+  cache.ρ[k] = inv(dot(s, y))
+  return nothing
+end
+
+function compute_lbfgs_direction!(d, g, cache::LBFGSCache, D)
+  #
+  # Check for empty cache
+  #
+  if cache.current_size == 0
+    return _descent_direction!(d, g, D)
+  end
+
+  #
+  # Apply two-loop recursion
+  #
+  α, q = cache.α, cache.q
+  @. q = g
+  
+  # αₖ = ρₖ(sₖᵀ∇ₙ) and q = q - αₖyₖ, so sign is flipped here 
+  for (k, (s, y, ρ)) in enumerate(reverse(cache))
+    α[k] = ρ * dot(s, q)
+    @. q += α[k] * y
+  end
+
+  # d = Hₖq so sign is flipped here
+  _descent_direction!(d, q, D)
+
+  # βₖ = ρₖ(yₖᵀd) and d = d + (αₖ-βₖ)sₖ so signs in αₖ and βₖ are flipped here
+  for (k, (s, y, ρ)) in enumerate(cache)
+    β = ρ * dot(y, d)
+    @. d += (α[k] - β) * s
+  end
+
+  return d
+end
+
+_descent_direction!(d, g, ::UniformScaling) = (@. d = g)
+_descent_direction!(d, g, D::Diagonal) = ldiv!(d, D, g)
+
