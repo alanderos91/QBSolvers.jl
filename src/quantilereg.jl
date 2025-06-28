@@ -46,32 +46,6 @@ function qreg_objective_uniform(r, q, h)
   end
 end
 
-function init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI::GramPlusDiag, b, H, q, h, lambda)
-  # Initialize the difference, d₁ = x₁ - x₀ = D⁻¹ (-∇₀)
-  T = eltype(AtApI)
-  A = AtApI.A
-  r = copy(b)                     # r₀ = b - Ax₀
-  mul!(r, A, x, -one(T), one(T))
-  prox_abs!(z_new, r, h)          # z₀ = prox[h|⋅|](r₀)
-  @. u = r - z_new                # -∇₀ = Aᵀ[r₀ - z₀ .+ (2q-1)h]
-  @. u = u + (2*q-1)*h
-  mul!(g, transpose(A), u, inv(T(2*h)), zero(T))
-  # !iszero(g) && axpy!(-T(lambda), x, g)
-
-  ldiv!(d, H, g)                  # d₁ = H⁻¹(-∇₀)
-  @. x = x + d                    # x₁ = x₀ + d₁
-
-  # Update recurrences to n = 1
-  mul!(u, A, d)               # r₁ = r₀ - A d₁
-  @. r = r - u
-  prox_abs!(z_old, r, h)      # z₁ = prox[h|⋅|](r₁)
-  @. v = u + z_old - z_new
-  mul!(w, transpose(A), v)    # Aᵀ(A d₁ + z₁ - z₀)
-  @. g = g - inv(T(2*h)) * w  # -∇₁ = -∇₀ - (2h)⁻¹Aᵀ(A d₁ + z₁ - z₀)
-
-  return r
-end
-
 ###
 ### Implementation
 ###
@@ -156,6 +130,7 @@ end
 function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}, q::T, h::T, lambda::T;
   maxiter::Int  = 100,
   gtol::Float64 = 1e-3,
+  rtol::Float64 = 1e-6,
 ) where T
   #
   A = AtApI.A
@@ -166,52 +141,58 @@ function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}
   d = zeros(n_var)
   g = zeros(n_var)
   u = zeros(n_obs)
-  v = zeros(n_obs)
-  w = zeros(n_var)
-  z_new = zeros(n_obs)
-  z_old = zeros(n_obs)
-  r = init_recurrences_qreg!(d, x, g, u, v, w, z_old, z_new, AtApI, b, H, q, h, lambda)
+  z = zeros(n_obs)
+
+  # Initialize
+  r = copy(b)
+  mul!(r, A, x, one(T), -one(T))
 
   # Iterate the algorithm map
-  iter = 1
-  converged = norm(g) <= gtol
-
+  iter = 0  # outer iterations; Moreau majorization
+  inner = 0 # inner iterations; QUB majorization
+  converged = false
+  f_curr = qreg_objective_uniform(r, q, h)
   while !converged && (iter < maxiter)
+    #
+    # Setup the next LS problem, |Ax - u|²
+    #   where u = b + zₙ - (2*q-1)*h 1
+    #
+    prox_abs!(z, r, h)
+    @. u = b + z - (2*q-1)*h
+    #
+    # Solve with QUB
+    #
+    mul!(g, AtApI, x)
+    mul!(g, transpose(A), u, one(T), -one(T)) # -∇ = Aᵀ(u - A*x)
+    not_stationary = norm(g) > gtol
+    if not_stationary
+      while not_stationary
+        inner += 1
+        ldiv!(d, H, g)
+        @. x = x + d
+        mul!(g, AtApI, x)
+        mul!(g, transpose(A), u, one(T), -one(T))
+        not_stationary = norm(g) > gtol
+      end
+      r = copy(b)
+      mul!(r, A, x, one(T), -one(T))
+    end
     iter += 1
-
-    # Compute dₙ₊₁ = dₙ - (2h)⁻¹D⁻¹ Aᵀ (A dₙ + zₙ - zₙ₋₁)
-    ldiv!(H, w)
-    @. d = d - inv(T(2*h)) * w
-
-    # Update coefficients
-    @. x = x + d
-
-    # Compute rₙ₊₁ = rₙ - A dₙ₊₁
-    mul!(u, A, d)
-    @. r = r - u
-
-    # Compute zₙ₊₁ = prox[h|⋅|](rₙ₊₁)
-    prox_abs!(z_new, r, h)
-
-    # Compute A dₙ₊₁ + zₙ₊₁ - zₙ
-    @. v = u + z_new - z_old
-
-    # Compute Aᵀ (A dₙ₊₁ + zₙ₊₁ - zₙ) and -∇ₙ₊₁
-    mul!(w, transpose(A), v)
-    @. g = g - inv(T(2*h)) * w  # assumes g is always -∇
-    converged = norm(g) <= gtol
-
-    # don't copy, swap'em
-    z_new, z_old = z_old, z_new
+    f_prev = f_curr
+    f_curr = qreg_objective_uniform(r, q, h)
+    converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
   end
 
   stats = (
     iterations = iter,
+    inner = inner,
     converged = converged,
     xnorm = norm(x),
     rnorm = norm(r),
-    gnorm = norm(g),
+    loss1 = qreg_objective(r, q), # check function loss
+    loss2 = f_curr,               # smoothed loss
   )
 
   return x, r, stats
 end
+
