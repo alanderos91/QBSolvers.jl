@@ -76,32 +76,24 @@ x_init = zeros(p)
 h = QBSolvers.default_bandwidth(A)
 
 #
-# solve it with diagonal QUB approximation (n_blk = 1)
+# solve it with diagonal QUB approximation (n_blk = p)
 #
-x, r, stats = @time solve_QREG(A, b, x_init, 1; q=q, h=h, maxiter=10^3, gtol=1e-2, gram=false)
-stats = (; stats...,
-    loss = QBSolvers.qreg_objective_uniform(r, q, h),
-)
+x, r, stats = @time solve_QREG(A, b, x_init, p; q=q, h=h, maxiter=10^3, rtol=1e-6, gtol=1e-2, gram=true)
 stats |> pairs |> display
 
 #
 # solve it with Fast Quantile Regression from MMDeweighting.jl
 #
-x, _, iter, _ = @time MMDeweighting.FastQR(A, b, q; tol=1e-8, h=h, verbose=false)
-
-# compute 'gradient' from a surrogate function for comparison
+x, _, iter, _ = @time MMDeweighting.FastQR(A, b, q; tol=1e-6, h=h, verbose=false)
 r = b - A*x
-z = QBSolvers.prox_abs!(similar(r), r, h)
-@. z = r - z + (2*q-1)*h
-g = inv(2*h) * transpose(A) * z
 
 stats = (;
     iterations = iter,
     converged = true,
     xnorm = norm(x),
     rnorm = norm(r),
-    gnorm = norm(g),
-    loss = QBSolvers.qreg_objective_uniform(r, q, h),
+    loss1 = QBSolvers.qreg_objective(r, q),             # check function loss
+    loss2 = QBSolvers.qreg_objective_uniform(r, q, h),  # smoothed loss (uniform)
 )
 stats |> pairs |> display
 ```
