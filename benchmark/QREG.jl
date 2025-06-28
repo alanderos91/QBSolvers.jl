@@ -51,7 +51,8 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
   Random.seed!(seed)
   maxiter = 2*10^3
   tscale = 1e-6 # report time in milliseconds
-  tol = 1e-6    # change in objective, relative to previous value
+  rtol = 1e-6   # change in objective, relative to previous value
+  gtol = 1e-2   # gradient tolerance for inner solve in QUB
 
   results = DataFrame(
     n=Int[],
@@ -65,7 +66,6 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
     iter=Int[],
     xnorm=Float64[],
     rnorm=Float64[],
-    gnorm=Float64[], # from surrogate
     objv1=Float64[], # check function
     objv2=Float64[], # uniform kernel
   )
@@ -84,59 +84,46 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
   h = QBSolvers.default_bandwidth(X)
 
   # MMDeweighting
-  β̂, _, iter, _ = MMDeweighting.FastQR(X, y, q; tol=tol, h=h, verbose=false)
-  benchMMD = @benchmark MMDeweighting.FastQR($X, $y, q; tol=$tol, h=$h, verbose=false) samples=N
+  β̂, _, iter, _ = MMDeweighting.FastQR(X, y, q; tol=rtol, h=h, verbose=false)
+  benchMMD = @benchmark MMDeweighting.FastQR($X, $y, q; tol=$rtol, h=$h, verbose=false) samples=N
 
-  # -∇₀ = Aᵀ[r - z .+ (2q-1)h]
   r = y - X*β̂
-  z = PLS.prox_abs!(similar(r), r, h)
-  @. z = r - z + (2*q-1)*h
-  grad = inv(2*h) * transpose(X) * z
-
   push!(results,
     (n, p, q, h, 1, p+1, "MMDeweighting",
       median(benchMMD.times) * tscale, iter,
-      norm(β̂), norm(r), norm(grad),
+      norm(β̂), norm(r),
       PLS.qreg_objective(r, q),
       PLS.qreg_objective_uniform(r, q, h),
     )
   )
-
-  gtol = norm(grad) # match on gradient of surrogate
-  β0 = zeros(size(X, 2))
 
   # conquer
   β̂, r, iter = solve_QREG_conquer(_X, y, q, h)
   benchCQR = @benchmark solve_QREG_conquer($_X, $y, $q, $h) samples=N
 
-  # -∇₀ = Aᵀ[r - z .+ (2q-1)h]
-  z = PLS.prox_abs!(similar(r), r, h)
-  @. z = r - z + (2*q-1)*h
-  grad = inv(2*h) * transpose(X) * z
-
   push!(results,
     (n, p, q, h, 1, p+1, "conquer",
       median(benchCQR.times) * tscale, iter,
-      norm(β̂), norm(r), norm(grad),
+      norm(β̂), norm(r),
       PLS.qreg_objective(r, q),
       PLS.qreg_objective_uniform(r, q, h),
     )
   )
 
-  for var_per_blk in (2^k for k in 0:Int(log2(p+1))-1)
+  β0 = zeros(size(X, 2))
+  for var_per_blk in (2^k for k in 0:Int(log2(p+1)))
     n_blk = fld(p+1, var_per_blk)
-    for normalize in (false, true)
-      β̂, _, stats = solve_QREG(X, y, β0, n_blk;
-        q=q, h=h, maxiter=maxiter, gtol=gtol)
-      r = y - X*β̂
+    for normalize in (false,)# true)
+      β̂, r, stats = solve_QREG(X, y, β0, n_blk;
+        q=q, h=h, maxiter=maxiter, gtol=gtol, rtol=rtol)
 
       benchMM = @benchmark solve_QREG($X, $y, $β0, $n_blk;
-        q=$q, h=$h, maxiter=$maxiter, gtol=$gtol) samples=N
+        q=$q, h=$h, maxiter=$maxiter, gtol=$gtol, rtol=$rtol) samples=N
 
       push!(results,
         (n, p, q, h, n_blk, var_per_blk, normalize ? "QUBn" : "QUB",
           median(benchMM.times) * tscale, stats.iterations,
-          stats.xnorm, stats.rnorm, stats.gnorm,
+          stats.xnorm, stats.rnorm,
           PLS.qreg_objective(r, q),
           PLS.qreg_objective_uniform(r, q, h),
         )
@@ -153,7 +140,7 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
     formatters = fmt_time,
     header = [
       "samples", "variables", "q", "bandwidth", "blocks", "block size",
-      "method", "time (us)", "iterations", "xnorm", "rnorm", "gnorm", "objv1", "objv2",
+      "method", "time (us)", "iterations", "xnorm", "rnorm", "objv1", "objv2",
     ]
   )
 
@@ -165,7 +152,7 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
     tf = tf_latex_booktabs,
     header = [
       "samples", "variables", latex_cell"$q$", latex_cell"$h$", "blocks", "block size",
-      "method", latex_cell"time ($\mu$s)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$\|g\|$", "objv1", "objv2",
+      "method", latex_cell"time ($\mu$s)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", "objv1", "objv2",
     ]
   )
 
