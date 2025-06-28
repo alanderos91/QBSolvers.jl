@@ -137,33 +137,35 @@ function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}
   n_obs, n_var = size(A)
 
   # 
-  x = deepcopy(x0)
+  x = deepcopy(x0); x_next = deepcopy(x0); x_prev = deepcopy(x0)
   d = zeros(n_var)
   g = zeros(n_var)
   u = zeros(n_obs)
   z = zeros(n_obs)
 
   # Initialize
-  r = copy(b)
-  mul!(r, A, x, one(T), -one(T))
+  r = copy(b) # r = b - A*x
+  mul!(r, A, x, -one(T), one(T))
 
   # Iterate the algorithm map
   iter = 0  # outer iterations; Moreau majorization
   inner = 0 # inner iterations; QUB majorization
+  k = 0     # Nesterov iterations
   converged = false
   f_curr = qreg_objective_uniform(r, q, h)
   while !converged && (iter < maxiter)
     #
     # Setup the next LS problem, |Ax - u|²
-    #   where u = b + zₙ - (2*q-1)*h 1
+    #   where u = b - zₙ + (2*q-1)*h 1
     #
     prox_abs!(z, r, h)
-    @. u = b + z - (2*q-1)*h
+    @. u = b - z + (2*q-1)*h
     #
     # Solve with QUB
     #
-    mul!(g, AtApI, x)
-    mul!(g, transpose(A), u, one(T), -one(T)) # -∇ = Aᵀ(u - A*x)
+    mul!(x_next, transpose(A), u) # save this constant
+    mul!(g, AtApI, x)             # -∇ = Aᵀ(u - A*x)
+    @. g = x_next - g
     not_stationary = norm(g) > gtol
     if not_stationary
       while not_stationary
@@ -171,15 +173,22 @@ function _solve_QREG_loop(AtApI::GramPlusDiag{T}, H, b::Vector{T}, x0::Vector{T}
         ldiv!(d, H, g)
         @. x = x + d
         mul!(g, AtApI, x)
-        mul!(g, transpose(A), u, one(T), -one(T))
+        @. g = x_next - g
         not_stationary = norm(g) > gtol
       end
-      r = copy(b)
-      mul!(r, A, x, one(T), -one(T))
+      # Nesterov acceleration
+      k += 1
+      @. x_next = x
+      @. x = k/(k+3) * (x_next - x_prev); @. x = x + x_next
+      @. x_prev = x_next
+      # Update residual
+      @. r = b
+      mul!(r, A, x, -one(T), one(T))
     end
     iter += 1
     f_prev = f_curr
     f_curr = qreg_objective_uniform(r, q, h)
+    if f_curr > f_prev k = 0 end
     converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
   end
 
