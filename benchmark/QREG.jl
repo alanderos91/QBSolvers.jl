@@ -114,6 +114,7 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
   for var_per_blk in (2^k for k in 0:Int(log2(p+1)))
     n_blk = fld(p+1, var_per_blk)
     for normalize in (false,)# true)
+      # QB only
       β̂, r, stats = solve_QREG(X, y, β0, n_blk;
         q=q, h=h, maxiter=maxiter, gtol=gtol, rtol=rtol)
 
@@ -122,6 +123,22 @@ function main(n, p, q, seed, corrtype, use_noise, ngroups)
 
       push!(results,
         (n, p, q, h, n_blk, var_per_blk, normalize ? "QUBn" : "QUB",
+          median(benchMM.times) * tscale, stats.iterations,
+          stats.xnorm, stats.rnorm,
+          PLS.qreg_objective(r, q),
+          PLS.qreg_objective_uniform(r, q, h),
+        )
+      )
+
+      # QB + L-BFGS
+      β̂, r, stats = solve_QREG_lbfgs(X, y, β0, n_blk;
+        q=q, h=h, maxiter=maxiter, gtol=gtol, rtol=rtol)
+
+      benchMM = @benchmark solve_QREG_lbfgs($X, $y, $β0, $n_blk;
+        q=$q, h=$h, maxiter=$maxiter, gtol=$gtol, rtol=$rtol) samples=N
+
+      push!(results,
+        (n, p, q, h, n_blk, var_per_blk, normalize ? "QUBn + L-BFGS" : "QUB + L-BFGS",
           median(benchMM.times) * tscale, stats.iterations,
           stats.xnorm, stats.rnorm,
           PLS.qreg_objective(r, q),

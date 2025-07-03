@@ -33,7 +33,7 @@ include("leastsquares.jl")
 export solve_OLS, solve_OLS_lbfgs, solve_OLS_lsmr, solve_OLS_cg
 
 include("quantilereg.jl")
-export solve_QREG
+export solve_QREG, solve_QREG_lbfgs
 
 include("adaboost.jl")
 export fit_adaboost, fit_classifier, load_data
