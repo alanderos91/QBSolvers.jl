@@ -8,7 +8,6 @@ function init_recurrences!(d, x, g, w, AtApI::GramPlusDiag, b, H, lambda)
   A = AtApI.A
   mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
   mul!(g, transpose(A), b, one(T), -one(T))
-  !iszero(lambda) && axpy!(-T(lambda), x, g)
 
   ldiv!(d, H, g) # d₁ = H⁻¹(-∇₀)
   @. x = x + d   # x₁ = x₀ + d₁
@@ -217,7 +216,6 @@ function _solve_OLS_lbfgs(AtApI::GramPlusDiag{T}, D, b::Vector{T}, x0::Vector{T}
   # Initialize gradient
   mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
   mul!(g, transpose(A), b, one(T), -one(T))
-  !iszero(lambda) && axpy!(-T(lambda), x, g)
 
   # LBFGS workspace
   cache = LBFGSCache{T}(n_var, memory)
