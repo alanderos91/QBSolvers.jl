@@ -26,6 +26,7 @@ _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)
 
 # Other helpful abstractions
 include("utilities.jl")
+include("qubmatrix.jl")
 include("lbfgs.jl")
 export simulate_corr_matrix, simulate_group_corr_matrix, Exchangeable, AutoRegressive
 
