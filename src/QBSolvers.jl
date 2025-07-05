@@ -13,6 +13,8 @@ import Base: iterate, length, last, isdone, IteratorEltype
 import LinearAlgebra: issymmetric, mul!, ldiv!, *
 
 const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
+const PkgTimer = TimerOutput()
+disable_timer!(PkgTimer)
 
 # Building blocks: efficient linear maps
 include(joinpath("linearmaps", "GramPlusDiag.jl"))
@@ -27,6 +29,8 @@ _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)
 
 # Other helpful abstractions
 include("utilities.jl")
+include("qubmatrix.jl")
+include("lbfgs.jl")
 export simulate_corr_matrix, simulate_group_corr_matrix, Exchangeable, AutoRegressive
 
 # Problems
