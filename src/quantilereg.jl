@@ -177,6 +177,7 @@ function solve_QREG_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_b
   maxiter::Int    = 100,
   gtol::Float64   = 1e-3,
   rtol::Float64   = 1e-6,
+  version::Int    = 1,
 ) where T
   #
   n_obs, n_var = size(A)
@@ -210,7 +211,11 @@ function solve_QREG_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_b
       @. x_next = x
       @. x_prev = x
       # Solve the QREG problem
-      _, _iter, _inner, _converged = __QREG_lbfgs__(workspace, linmaps, q, h, rtol, gtol, maxiter)
+      if version == 1
+        _, _iter, _inner, _converged = __QREG_lbfgs__(workspace, linmaps, q, h, rtol, gtol, maxiter)
+      elseif version == 2
+        _, _iter, _inner, _converged = __QREG_lbfgs_single__(workspace, linmaps, q, h, rtol, maxiter)
+      end
       _inner += iter0
       return _iter, _inner, _converged
     end
@@ -284,5 +289,65 @@ function __QREG_lbfgs__(workspace, linmaps, q, h, rtol, gtol, maxiter)
   end
 
   return r, iter, inner, converged
+end
+
+function __QREG_lbfgs_single__(workspace, linmaps, q, h, rtol, maxiter)
+  # gradient calculation
+  weights(r, q, h) = q - 1/2 + ifelse(abs(r) > h, sign(r), r)
+
+  # unpack
+  x, _, _, g, d, r, u, z, cache = workspace
+  A, b, _, H = linmaps
+  T = eltype(A)
+
+  # Initialize r = b - A*x
+  @. r = b
+  mul!(r, A, x, -one(T), one(T))
+
+  # Make sure L-BFGS cache is empty
+  cache.current_index = 0
+  cache.current_size = 0
+
+  # Iterate the algorithm map
+  iter = 0
+  converged = false
+  f_curr = qreg_objective_uniform(r, q, h)
+  alpha = one(T)
+  while !converged && (iter < maxiter)
+    # Compute gradient
+    let z = z, r = r, q = q, h = h
+      w(ri) = weights(ri, q, h)
+      map!(w, z, r)
+    end
+    mul!(g, transpose(A), z) # negative gradient
+
+    # Update the LBFGS workspace and compute the next direction
+    iter > 1 && update!(cache, alpha, d, g)
+    compute_lbfgs_direction!(d, g, cache, H)
+
+    # Save the old gradient
+    @. cache.q = g
+
+    # Compute perturbation in residual due to update
+    mul!(z, A, d)
+
+    # Backtrack to make sure we satisfy descent
+    alpha = one(T)
+    @. u = r - alpha*z
+    f_prev = f_curr
+    f_curr = qreg_objective_uniform(u, q, h)
+    while f_curr > f_prev
+      alpha = 1//2 * alpha
+      @. u = r - alpha*z
+      f_curr = qreg_objective_uniform(u, q, h)
+    end
+    @. x = x + alpha*d
+    @. r = u
+
+    iter += 1
+    converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
+  end
+
+  return r, iter, 0, converged
 end
 
