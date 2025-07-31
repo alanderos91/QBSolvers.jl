@@ -1,8 +1,38 @@
 #
-# Spectral radius of AtA - J, where J is (block) diagonal Matrix based on AtA.
+# Spectral radius of AtA - J, where J is a block diagonal Matrix based on AtA.
 #
 function estimate_spectral_radius(AtA, J; kwargs...)
-  lambda, _, ch = powm!(GramMinusBlkDiag(AtA, J), ones(size(J, 1)); log=true, kwargs...)
+  M = GramMinusBlkDiag(AtA, J)
+  v = ones(size(J, 1))
+  lambda, _, ch = powm!(M, v; log=true, kwargs...)
+  return abs(lambda)
+end
+
+function estimate_spectral_radius(G, J::Union{Diagonal,UniformScaling}; kwargs...)
+  # M = AᵀA - J
+  T = eltype(G)
+  M = GramPlusDiag(
+    G.A, G.AtA, J, G.n_obs, G.n_var, G.tmp, one(T), -one(T)
+  )
+  v = ones(size(G, 1))
+  lambda, _, ch = powm!(M, v; log=true, kwargs...)
+  return abs(lambda)
+end
+
+function run_power_method!(v, M; maxiter = maximum(size(M)))
+  normalize!(v)
+  tmp = similar(v)
+  lambda = Inf
+  lambda_prev = zero(lambda)
+  iter = 0
+  while iter < maxiter && abs(lambda - lambda_prev) > 1e-3
+    iter += 1
+    lambda_prev = lambda
+    @. tmp = v
+    mul!(v, M, tmp)
+    lambda = dot(tmp, v) / dot(tmp, tmp)
+    normalize!(v)
+  end
   return abs(lambda)
 end
 
@@ -21,10 +51,9 @@ function compute_main_diagonal(A::AbstractMatrix, AtA)
   return Diagonal(data)
 end
 
+# need to consider cases where A is centered and/or scaled
 function compute_main_diagonal(A::NormalizedMatrix, AtA)
-  data = similar(A.A, size(A, 2))
-  fill!(data, 1)
-  return Diagonal(data)
+  return one(eltype(A))*I
 end
 
 function compute_block_diagonal(AtApD, n_blk; gram::Bool=false, kwargs...)
