@@ -85,6 +85,12 @@ function _gpd_mul_(::AbstractMatrix, y, gpd, x)
   return y
 end
 
+function _gpd_mul_diag_(y, D::Diagonal, x, alpha, beta)
+  T = eltype(y)
+  @. y = T(beta)*y + T(alpha) * D.diag * x
+  return y
+end
+
 function _gpd_mul_diag_(y, D::UniformScaling, x, alpha, beta)
   T = eltype(y)
   @. y = T(beta)*y + T(alpha*D.λ)*x
