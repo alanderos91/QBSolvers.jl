@@ -52,9 +52,15 @@ function with_qub_matrix(f, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, use_q
         AtA0 = NormalizedGramPlusDiag(AtA)
         J = compute_main_diagonal(AtA0.A, AtA0.AtA)
         rho = estimate_spectral_radius(AtA0, J, maxiter=3)
-        @. J.diag = (1+rho)*AtA0.A.scale^2 + T(lambda)
-        H = BlkDiagPlusRank1(n_obs, n_var, J, AtA0.A.shift, one(T), T(n_obs))
-        f(H)
+        if lambda > 0
+          S = Diagonal(@. inv(AtA0.A.scale^2))
+          H = Diagonal(similar(S.diag))
+          @. H.diag = (1+rho) + T(lambda) * S.diag
+          AtApI = GramPlusDiag(AtA0.A, AtA0.AtA, S, AtA0.n_obs, AtA0.n_var, AtA0.tmp, one(T), T(lambda))
+          f(AtApI, H)
+        else
+          f(AtA0, (1+rho)*I)
+        end
       end
     elseif use_qub
       let
@@ -62,7 +68,8 @@ function with_qub_matrix(f, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, use_q
         rho = estimate_spectral_radius(AtA, J, maxiter=3)
         H = J
         @. H.diag = H.diag + rho + lambda
-        f(H)
+        AtApI = GramPlusDiag(AtA, one(T), T(lambda))
+        f(AtApI, H)
       end
     else
       let

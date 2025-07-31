@@ -64,7 +64,6 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
 
   # linear maps
   AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
-  AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
   
   # workspace
   x = deepcopy(x0)
@@ -79,12 +78,16 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
   # the with_qub_matrix() function.
   #
   run = let
-    function(H)
+    function(AtApI, H)
       init_recurrences!(workspace, AtApI, b, H)
       __OLS_loop__(workspace, (AtApI, H), gtol, maxiter, 1)
     end
   end
   iter, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, use_qub, normalize)
+
+  if normalize
+    ldiv!(Diagonal(vec(std(A, dims=1)) * sqrt(n_obs - 1)), x)
+  end
 
   # final residual
   r = copy(b)
@@ -152,7 +155,8 @@ function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_bl
   gram::Bool = _cache_gram_heuristic_(A),
   maxiter::Int = 100,
   gtol::Float64 = 1e-3,
-  memory::Int = 10,  
+  memory::Int = 10,
+  normalize::Bool = false,
 ) where T
   #
   n_obs, n_var = size(A)
@@ -177,12 +181,16 @@ function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_bl
   if precond == :none
     iter, converged = __OLS_lbfgs__(workspace, (A, b, AtApI, I), gtol, maxiter, 0)
   elseif precond == :qub
-    run = let A = A, AtApI = AtApI, b = b, workspace = workspace, gtol = gtol, maxiter = maxiter
-      function(H)
-        __OLS_lbfgs__(workspace, (A, b, AtApI, H), gtol, maxiter, 0)
+    run = let b = b, workspace = workspace, gtol = gtol, maxiter = maxiter
+      function(AtApI, H)
+        __OLS_lbfgs__(workspace, (AtApI.A, b, AtApI, H), gtol, maxiter, 0)
       end
     end
-    iter, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, true, false)
+    iter, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, true, normalize)
+  end
+
+  if normalize
+    ldiv!(Diagonal(vec(std(A, dims=1)) * sqrt(n_obs - 1)), x)
   end
 
   # final residual
