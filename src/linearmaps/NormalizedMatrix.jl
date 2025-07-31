@@ -23,18 +23,8 @@ function NormalizedMatrix(A::AbstractMatrix{T};
   #
   n_obs, n_var = size(A)
   shift = similar(A, n_var); mean!(shift, transpose(A))
-  scale = similar(A, n_var)
-  
-  for j in axes(A, 2)
-    @views a = A[:, j]
-    if all(==(1), a)
-      shift[j] = zero(T)
-      scale[j] = sqrt(n_obs)
-    else
-      s = sqrt(dot(a, a) - n_obs*shift[j]^2)
-      scale[j] = ifelse(iszero(s), one(T), s)
-    end
-  end
+  scale = std(A, dims=1) |> vec
+  @. scale = scale * sqrt(n_obs - 1)
   matT, vecT1, vecT2 = typeof(A), typeof(u), typeof(v)
   return NormalizedMatrix{T,matT,vecT1,vecT2}(A, n_obs, n_var, shift, scale, u, v)
 end
