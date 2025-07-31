@@ -58,6 +58,6 @@ function LinearAlgebra.ldiv!(H::BlkDiagPlusRank1, x::AbstractVector)
   top = dot(w, x)
   bot = inv(beta) + dot(u, w)
   ldiv!(J, x)
-  @. x = T(inv(alpha))*x + T(top/bot)*w
+  @. x = T(inv(alpha))*x - T(top/bot)*w
   return x
 end
