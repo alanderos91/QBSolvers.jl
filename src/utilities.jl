@@ -135,7 +135,7 @@ end
 
 function form_AtA!(data, A::AbstractMatrix)
   T = eltype(A)
-  BLAS.syrk!('L', 'T', one(T), C.A, zero(T), data)
+  BLAS.syrk!('L', 'T', one(T), A, zero(T), data)
   return data
 end
 
