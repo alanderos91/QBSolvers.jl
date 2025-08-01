@@ -3,9 +3,6 @@ module QBSolvers
 using BlockArrays
 using LinearAlgebra, Statistics, Random
 using IterativeSolvers
-using DecisionTree: Ensemble, Root, Node, LeafOrNode,
-  build_stump, apply_tree, apply_adaboost_stumps,
-  mk_rng, load_data
 
 import Base: getindex, size, eltype, view
 import Base: iterate, length, last, isdone, IteratorEltype
@@ -36,8 +33,5 @@ export solve_OLS, solve_OLS_lbfgs, solve_OLS_lsmr, solve_OLS_cg
 
 include("quantilereg.jl")
 export solve_QREG, solve_QREG_lbfgs
-
-include("adaboost.jl")
-export fit_adaboost, fit_classifier, load_data
 
 end # module
