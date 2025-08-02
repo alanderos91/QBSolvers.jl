@@ -50,11 +50,10 @@ end
 function LinearAlgebra.mul!(y::AbstractVector, C::NormalizedMatrix, x::AbstractVector)
   T = eltype(C)
   v = C.v
-  @. v = x
-  ldiv!(Diagonal(C.scale), v)
-  γ = dot(C.shift, v)
-  fill!(y, γ)
-  mul!(y, C.A, v, one(T), -one(T))
+  ldiv!(v, Diagonal(C.scale), x)
+  c = dot(C.shift, v)
+  mul!(y, C.A, v)
+  @. y = y - T(c)
   return y
 end
 
@@ -111,19 +110,13 @@ end
 
 # make sure mul! works correctly when AtA is cached
 function _gpd_mul_(::NormalizedMatrix, y, gpd, x)
+  T = eltype(gpd)
   n, S, avg, v = gpd.n_obs, Diagonal(gpd.A.scale), gpd.A.shift, gpd.A.v
-  if size(gpd.AtA, 1) > 0
-    # AtA is not stored in normalized format; need to shift
-    @. v = x
-    ldiv!(S, v)
-    c = dot(avg, v)
-    mul!(y, Symmetric(gpd.AtA), v)
-    @. y = y - n*c*avg
-    ldiv!(S, y)
-  else
-    # mul! will handle shift and scale
-    mul!(gpd.tmp, gpd.A, x)
-    mul!(y, transpose(gpd.A), gpd.tmp)
-  end
+  AtA = GramPlusDiag(gpd.A.A, gpd.AtA, gpd.D, gpd.n_obs, gpd.n_var, gpd.tmp, one(T), zero(T))
+  ldiv!(v, S, x)
+  c = dot(avg, v)
+  mul!(y, AtA, v)
+  @. y = y - n*c*avg
+  ldiv!(S, y)
   return y
 end

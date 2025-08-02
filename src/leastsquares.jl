@@ -46,30 +46,25 @@ function __OLS_loop__(workspace, linmaps, gtol, maxiter, iter = 1)
   return iter, converged
 end
 
-function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  lambda::Float64 = 0.0,
-  use_qub::Bool = false,
-  normalize::Bool = false,
-  gram::Bool = _cache_gram_heuristic_(A),
-  maxiter::Int = 100,
-  gtol::Float64 = 1e-3,
+function solve_OLS(A::AbstractMatrix{T}, b::AbstractVector{T};
+  lambda::Float64   = zero(T),
+  normalize::Symbol = :none,
+  gram::Bool        = _cache_gram_heuristic_(A),
+  maxiter::Int      = maximum(size(A)),
+  tol::Float64      = 1e-3 * size(A, 2),
 ) where T
   #
   n_obs, n_var = size(A)
-  var_per_blk = cld(n_var, n_blk)
-
-  @assert rem(n_var, n_blk) == 0
-  @assert var_per_blk > 0
   @assert lambda >= 0
 
   # linear maps
-  AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
+  AtA = GramPlusDiag(A; gram=gram)  # may cache AtA
   
   # workspace
-  x = deepcopy(x0)
-  g = zeros(n_var)
-  d = zeros(n_var)
-  w = zeros(n_var)
+  x = similar(b, T, n_var); fill!(x, zero(T))
+  g = similar(b, T, n_var)
+  d = similar(b, T, n_var)
+  w = similar(b, T, n_var)
   workspace = (x, g, d, w)
 
   #
@@ -80,12 +75,12 @@ function solve_OLS(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int
   run = let
     function(AtApI, H)
       init_recurrences!(workspace, AtApI, b, H)
-      __OLS_loop__(workspace, (AtApI, H), gtol, maxiter, 1)
+      __OLS_loop__(workspace, (AtApI, H), tol, maxiter, 1)
     end
   end
-  iter, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, use_qub, normalize)
+  iter, converged = with_qub_matrix(run, AtA, lambda, normalize)
 
-  if normalize
+  if normalize == :rescale
     ldiv!(Diagonal(vec(std(A, dims=1)) * sqrt(n_obs - 1)), x)
   end
 
