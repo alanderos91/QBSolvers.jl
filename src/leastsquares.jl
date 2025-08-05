@@ -4,13 +4,22 @@
 
 function init_recurrences!(workspace, AtApI::GramPlusDiag, b, H)
   # Unpack
-  (x, g, d, w) = workspace
+  (x, g, d, w, x_prev) = workspace
 
   # Initialize the difference, d₁ = x₁ - x₀
   T = eltype(AtApI)
   A = AtApI.A
-  mul!(g, AtApI, x) # -∇₀ = Aᵀ⋅r - λx
-  mul!(g, transpose(A), b, one(T), -one(T))
+  # -∇₀ = Aᵀ⋅r - λx
+  if length(AtApI.AtA) > 0
+    mul!(g, AtApI, x)
+    mul!(g, transpose(A), b, one(T), -one(T))
+  else
+    r = AtApI.tmp
+    mul!(r, A, x)
+    @. r = b - r
+    mul!(g, transpose(A), r)
+    AtApI.beta > 0 && (@. g = g - AtApI.beta*x)
+  end
 
   ldiv!(d, H, g) # d₁ = H⁻¹(-∇₀)
   @. x = x + d   # x₁ = x₀ + d₁
@@ -22,12 +31,12 @@ end
 ### Implementation
 ###
 
-function __OLS_loop__(workspace, linmaps, gtol, maxiter, iter = 1)
+function __OLS_loop__(workspace, linmaps, gtol, maxiter, iter = 1, k = 1, accel = false)
   # unpack
-  x, g, d, w = workspace
+  x, g, d, w, x_prev = workspace
   AtApI, H = linmaps
   converged = norm(g) <= gtol
-
+  @. x_prev = x
   while !converged && (iter < maxiter)
     iter += 1
 
@@ -41,6 +50,15 @@ function __OLS_loop__(workspace, linmaps, gtol, maxiter, iter = 1)
 
     # Update coefficients
     @. x = x + d
+
+    if accel
+      k += 1
+      c = (k-1)/(k+2)
+      @. w = x - x_prev
+      @. x_prev = x
+      @. d = d + c*w  # gₖ₊₁ = gₖ - (AᵀA+λI)[dₖ₊₁ + (k-1)/(k+2)(xₖ - xₖ₋₁)]
+      @. x = x + c*w  # zₖ = xₖ + (k-1)/(k+2) * (xₖ - xₖ₋₁)
+    end
   end
 
   return iter, converged
@@ -51,7 +69,8 @@ function solve_OLS(A::AbstractMatrix{T}, b::AbstractVector{T};
   normalize::Symbol = :none,
   gram::Bool        = _cache_gram_heuristic_(A),
   maxiter::Int      = maximum(size(A)),
-  tol::Float64      = 1e-3 * size(A, 2),
+  accel::Bool       = false,
+  tol::Float64      = 1e-3 * sqrt(size(A, 2)),
 ) where T
   #
   n_obs, n_var = size(A)
@@ -61,11 +80,11 @@ function solve_OLS(A::AbstractMatrix{T}, b::AbstractVector{T};
   AtA = GramPlusDiag(A; gram=gram)  # may cache AtA
   
   # workspace
-  x = similar(b, T, n_var); fill!(x, zero(T))
+  x = similar(b, T, n_var); fill!(x, zero(T)); x_prev = similar(b, T, n_var)
   g = similar(b, T, n_var)
   d = similar(b, T, n_var)
   w = similar(b, T, n_var)
-  workspace = (x, g, d, w)
+  workspace = (x, g, d, w, x_prev)
 
   #
   # We cannot retrieve the QUB matrix directly due to type-instability in the way it is created.
@@ -75,7 +94,7 @@ function solve_OLS(A::AbstractMatrix{T}, b::AbstractVector{T};
   run = let
     function(AtApI, H)
       init_recurrences!(workspace, AtApI, b, H)
-      __OLS_loop__(workspace, (AtApI, H), tol, maxiter, 1)
+      __OLS_loop__(workspace, (AtApI, H), tol, maxiter, 1, 1, accel)
     end
   end
   iter, converged = with_qub_matrix(run, AtA, lambda, normalize)
@@ -111,7 +130,7 @@ function __OLS_lbfgs__(workspace, linmaps, gtol, maxiter, iter = 0)
   # Iterate the algorithm map
   converged = norm(g) <= gtol
   alpha = one(T)
-  
+
   while !converged && (iter < maxiter)
     iter += 1
 
@@ -144,28 +163,24 @@ function __OLS_lbfgs__(workspace, linmaps, gtol, maxiter, iter = 0)
   return iter, converged
 end
 
-function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk;
-  lambda::Float64 = 0.0,
-  precond::Symbol = :none,
-  gram::Bool = _cache_gram_heuristic_(A),
-  maxiter::Int = 100,
-  gtol::Float64 = 1e-3,
-  memory::Int = 10,
-  normalize::Bool = false,
+function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T};
+  lambda::Float64   = zero(T),
+  normalize::Symbol = :none,
+  precond::Symbol   = :none,
+  gram::Bool        = _cache_gram_heuristic_(A),
+  maxiter::Int      = maximum(size(A)),
+  tol::Float64      = 1e-3 * sqrt(size(A, 2)),
+  memory::Int       = 10,
 ) where T
   #
   n_obs, n_var = size(A)
-  var_per_blk = cld(n_var, n_blk)
-
-  @assert rem(n_var, n_blk) == 0
-  @assert var_per_blk > 0
   @assert lambda >= 0
 
   AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))  # same data, add lazy shift by λI
 
   # workspace
-  x = deepcopy(x0)
+  x = zeros(T, n_var)
   g = zeros(T, n_var)
   d = zeros(T, n_var)
   w = zeros(T, n_var)
@@ -174,17 +189,17 @@ function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_bl
 
   # Type-stability trick
   if precond == :none
-    iter, converged = __OLS_lbfgs__(workspace, (A, b, AtApI, I), gtol, maxiter, 0)
+    iter, converged = __OLS_lbfgs__(workspace, (A, b, AtApI, I), tol, maxiter, 0)
   elseif precond == :qub
-    run = let b = b, workspace = workspace, gtol = gtol, maxiter = maxiter
+    run = let b = b, workspace = workspace, tol = tol, maxiter = maxiter
       function(AtApI, H)
-        __OLS_lbfgs__(workspace, (AtApI.A, b, AtApI, H), gtol, maxiter, 0)
+        __OLS_lbfgs__(workspace, (AtApI.A, b, AtApI, H), tol, maxiter, 0)
       end
     end
-    iter, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, true, normalize)
+    iter, converged = with_qub_matrix(run, AtA, lambda, normalize)
   end
 
-  if normalize
+  if normalize == :rescale
     ldiv!(Diagonal(vec(std(A, dims=1)) * sqrt(n_obs - 1)), x)
   end
 
