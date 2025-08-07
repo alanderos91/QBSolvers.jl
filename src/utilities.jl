@@ -65,3 +65,14 @@ function compute_block_diagonal(AtApD, n_blk; gram::Bool=false, kwargs...)
   return J
 end
 
+#
+# Rescale solutions whenever NormalizedMatrix is used for the design matrix
+#
+_apply_scaling_(op, x, A::NormalizedMatrix) = (@. x = op(x, A.scale))
+
+maybe_rescale!(x, A) = nothing
+maybe_unscale!(x, A) = nothing
+
+maybe_rescale!(x, A::NormalizedMatrix) = _apply_scaling_(*, x, A)
+maybe_unscale!(x, A::NormalizedMatrix) = _apply_scaling_(/, x, A)
+

@@ -61,6 +61,8 @@ function __OLS_loop__(workspace, linmaps, gtol, maxiter, iter = 1, k = 1, accel 
     end
   end
 
+  maybe_unscale!(x, AtApI.A)
+
   return iter, converged
 end
 
@@ -98,10 +100,6 @@ function solve_OLS(A::AbstractMatrix{T}, b::AbstractVector{T};
     end
   end
   iter, converged = with_qub_matrix(run, AtA, lambda, normalize)
-
-  if normalize == :rescale
-    ldiv!(Diagonal(vec(std(A, dims=1)) * sqrt(n_obs - 1)), x)
-  end
 
   # final residual
   r = copy(b)
@@ -160,6 +158,8 @@ function __OLS_lbfgs__(workspace, linmaps, gtol, maxiter, iter = 0)
     converged = norm(g) <= gtol
   end
 
+  maybe_unscale!(x, AtApI.A)
+
   return iter, converged
 end
 
@@ -197,10 +197,6 @@ function solve_OLS_lbfgs(A::AbstractMatrix{T}, b::Vector{T};
       end
     end
     iter, converged = with_qub_matrix(run, AtA, lambda, normalize)
-  end
-
-  if normalize == :rescale
-    ldiv!(Diagonal(vec(std(A, dims=1)) * sqrt(n_obs - 1)), x)
   end
 
   # final residual
