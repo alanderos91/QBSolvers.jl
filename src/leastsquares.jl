@@ -218,6 +218,54 @@ end
 ### Wrappers
 ###
 
+function solve_OLS_qr(A, b)
+  #
+  size(A, 1) >= size(A, 2) || error("Need n ≥ p; got n = $(size(A, 1)), p = $(size(A, 2))")
+  T = eltype(A)
+
+  x = A \ b
+
+  r = copy(b)
+  mul!(r, A, x, -one(T), one(T))
+  g = transpose(A) * r  # -∇ = Aᵀr
+
+  stats = (
+    iterations = 1,
+    converged = true,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
+function solve_OLS_chol(A, b; lambda::Real=0.0)
+  #
+  lambda >= 0 || error("Regularization λ must be non-negative. Got: $(lambda)")
+  T = eltype(A)
+
+  At = transpose(A)
+  AtA = Symmetric(At * A + lambda*I)
+  chol = cholesky!(AtA)
+  x = chol \ (At*b)
+
+  r = copy(b)
+  mul!(r, A, x, -one(T), one(T))
+  g = copy(x)
+  mul!(g, transpose(A), r, one(T), -lambda) # -∇ = Aᵀr - λx
+
+  stats = (
+    iterations = 1,
+    converged = true,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
 function solve_OLS_lsmr(A, b;
   x0 = IterativeSolvers.zerox(A, b),
   lambda::Real=0.0,
@@ -233,7 +281,34 @@ function solve_OLS_lsmr(A, b;
   mul!(r, A, x, -one(T), one(T))
   g = copy(x)
   mul!(g, transpose(A), r, one(T), -lambda) # -∇ = Aᵀr - λx
-  
+
+  stats = (
+    iterations = ch.iters,
+    converged = ch.isconverged,
+    xnorm = norm(x),
+    rnorm = norm(r),
+    gnorm = norm(g),
+  )
+
+  return x, r, stats
+end
+
+function solve_OLS_lsqr(A, b;
+  x0 = IterativeSolvers.zerox(A, b),
+  lambda::Real=0.0,
+  kwargs...
+)
+  #
+  lambda >= 0 || error("Regularization λ must be non-negative. Got: $(lambda)")
+  T = eltype(A)
+
+  x, ch = lsqr!(x0, A, b; damp=sqrt(lambda), log=true, kwargs...)
+
+  r = copy(b)
+  mul!(r, A, x, -one(T), one(T))
+  g = copy(x)
+  mul!(g, transpose(A), r, one(T), -lambda) # -∇ = Aᵀr - λx
+
   stats = (
     iterations = ch.iters,
     converged = ch.isconverged,
@@ -248,7 +323,6 @@ end
 function solve_OLS_cg(A, b;
   x0 = IterativeSolvers.zerox(A, b),
   lambda::Real=0.0,
-  use_qub::Bool=false,
   gram::Bool = _cache_gram_heuristic_(A),
   kwargs...  
 )
@@ -259,15 +333,7 @@ function solve_OLS_cg(A, b;
   AtA = GramPlusDiag(A; gram=gram)
   AtApI = GramPlusDiag(AtA, one(T), T(lambda))
 
-  if use_qub # precondition with QUB matrix
-    D = compute_main_diagonal(AtA.A, AtA.AtA)
-    rho = estimate_spectral_radius(AtA, D, maxiter=3)
-    @. D.diag += lambda + rho
-
-    x, ch = cg!(x0, AtApI, transpose(A)*b; Pl=D, log=true, kwargs...)
-  else
-    x, ch = cg!(x0, AtApI, transpose(A)*b; log=true, kwargs...)
-  end
+  x, ch = cg!(x0, AtApI, transpose(A)*b; log=true, kwargs...)
 
   r = copy(b)
   mul!(r, A, x, -one(T), one(T))
