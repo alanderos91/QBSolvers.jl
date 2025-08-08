@@ -68,7 +68,10 @@ end
 #
 # Rescale solutions whenever NormalizedMatrix is used for the design matrix
 #
-_apply_scaling_(op, x, A::NormalizedMatrix) = (@. x = op(x, A.scale))
+function _apply_scaling_(op, x, A::NormalizedMatrix)
+  @. x = op(x, A.scale)
+  return nothing
+end
 
 maybe_rescale!(x, A) = nothing
 maybe_unscale!(x, A) = nothing
