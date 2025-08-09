@@ -76,11 +76,11 @@ end
 ### Implementation
 ###
 
-function __QREG_loop__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
+function __QREG_loop__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, q, h, rtol, gtol, maxiter, accel)
   # unpack
-  x, x_next, x_prev, g, d, r, u, z = workspace
-  A, b, AtApI, H = linmaps
-  w = x_next
+  x, x_next, x_prev, r, u, z = out_workspace
+  A, b = out_linmaps
+  AtApI, H = inn_linmaps
   T = eltype(A)
 
   # Initialize r = b - A*x
@@ -103,8 +103,9 @@ function __QREG_loop__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
     #
     # Solve with QUB
     #
-    init_recurrences!((x, g, d, w), AtApI, u, H)
-    inner_iter, _ = __OLS_loop__((x, g, d, w), (AtApI, H), gtol, maxiter, 1)
+    maybe_rescale!(x, AtApI.A)
+    init_recurrences!(inn_workspace, AtApI, u, H)
+    inner_iter, _ = __OLS_loop__(inn_workspace, inn_linmaps, gtol, maxiter, 1, 1, accel)
     inner += inner_iter
     if accel
       #
@@ -135,59 +136,67 @@ function __QREG_loop__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
   return r, iter, inner, converged
 end
 
-function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  q::Real         = T(0.5),
-  h::Real         = T(default_bandwidth(A)),
-  lambda::Real    = T(0.0),
-  gram::Bool      = _cache_gram_heuristic_(A),
-  normalize::Bool = false,
-  memory::Int     = 10,
-  maxiter::Int    = 100,
-  gtol::Float64   = 1e-3,
-  rtol::Float64   = 1e-6,
-  accel::Bool     = false,
+function solve_QREG(A::AbstractMatrix{T}, b::Vector{T};
+  q::Real           = T(0.5),
+  h::Real           = T(default_bandwidth(A)),
+  lambda::Real      = zero(T),
+  gram::Bool        = _cache_gram_heuristic_(A),
+  normalize::Symbol = false,
+  memory::Int       = 10,
+  maxiter::Int      = maximum(size(A)),
+  gtol::Float64     = 1e-3 * sqrt(size(A, 2)),
+  rtol::Float64     = 1e-6,
+  accel::Bool       = false,
 ) where T
   #
   n_obs, n_var = size(A)
-  var_per_blk = cld(n_var, n_blk)
-
-  @assert rem(n_var, n_blk) == 0
-  @assert var_per_blk > 0
   @assert 0 < q < 1
 
   lambda = zero(T)
   AtA = GramPlusDiag(A; gram=gram)              # may cache AtA
 
-  x = deepcopy(x0)
+  x = zeros(T, n_var)
   x_next = deepcopy(x)
   x_prev = deepcopy(x)
-  g = zeros(n_var)
-  d = zeros(n_var)
-  r = zeros(n_obs)
-  u = zeros(n_obs)
-  z = zeros(n_obs)
-  workspace = (x, x_next, x_prev, g, d, r, u, z)
+  w = deepcopy(x)
+  g = zeros(T, n_var)
+  d = zeros(T, n_var)
+  r = zeros(T, n_obs)
+  u = zeros(T, n_obs)
+  z = zeros(T, n_obs)
+  cache = LBFGSCache{T}(n_var, memory)
+  
+  ols_workspace = (x, g, d, w, cache)
+  out_workspace = (x, x_next, x_prev, r, u, z)
+  inn_workspace = (x, g, d, w, x_next)
 
-  run = let
+  run = let A = A, b = b
     function(AtApI, H)
-      # constants/linear maps
-      linmaps = (AtApI.A, b, AtApI, H)
+      ols_linmaps = (AtApI.A, b, AtApI, H)
+      out_linmaps = (A, b)
+      inn_linmaps = (AtApI, H)
+
       # Construct the OLS solution to use as our initial guess.
-      cache = LBFGSCache{T}(n_var, memory); w = x_next
-      iter0, _ = __OLS_lbfgs__((x, g, d, w, cache), linmaps, gtol*sqrt(n_var), maxiter, 0)
+      ols_iter, _ = __OLS_lbfgs__(ols_workspace, ols_linmaps, gtol, maxiter, 0)
       @. x_next = x
       @. x_prev = x
+
       # Solve the QREG problem
-      _, _iter, _inner, _converged = __QREG_loop__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
-      _inner += iter0
-      return _iter, _inner, _converged
+      _, out_iter, inn_iter, _converged = __QREG_loop__(
+        out_workspace, out_linmaps,
+        inn_workspace, inn_linmaps,
+        q, h, rtol, gtol, maxiter, accel
+      )
+
+      return ols_iter, out_iter, inn_iter, _converged
     end
   end
-  iter, inner, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, true, normalize)
+  iter_init, iter_outer, iter_inner, converged = with_qub_matrix(run, AtA, lambda, normalize)
 
   stats = (
-    iterations = iter,
-    inner = inner,
+    iterations = iter_outer,
+    init  = iter_init,
+    inner = iter_inner,
     converged = converged,
     xnorm = norm(x),
     rnorm = norm(r),
@@ -198,42 +207,43 @@ function solve_QREG(A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::In
   return x, r, stats
 end
 
-function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_blk::Int;
-  q::Real         = T(0.5),
-  h::Real         = T(default_bandwidth(A)),
-  lambda::Real    = T(0.0),
-  gram::Bool      = _cache_gram_heuristic_(A),
-  normalize::Bool = false,
-  memory::Int     = 10,
-  maxiter::Int    = 100,
-  gtol::Float64   = 1e-3,
-  rtol::Float64   = 1e-6,
-  version::Int    = 1,
-  epsilon::Real   = h*h/4,
-  accel::Bool     = false,
+function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T};
+  q::Real           = T(0.5),
+  h::Real           = T(default_bandwidth(_A)),
+  lambda::Real      = T(0.0),
+  gram::Bool        = _cache_gram_heuristic_(_A),
+  normalize::Symbol = :none,
+  memory::Int       = 10,
+  maxiter::Int      = maximum(size(_A)),
+  gtol::Float64     = 1e-3 * sqrt(size(_A, 2)),
+  rtol::Float64     = 1e-6,
+  version::Int      = 1,
+  epsilon::Real     = h*h/4,
+  accel::Bool       = false,
 ) where T
   #
   n_obs, n_var = size(_A)
-  var_per_blk = cld(n_var, n_blk)
-
-  @assert rem(n_var, n_blk) == 0
-  @assert var_per_blk > 0
   @assert 0 < q < 1
 
   lambda = zero(T)
   AtA = GramPlusDiag(_A; gram=gram)              # may cache AtA
 
-  x = deepcopy(x0)
+  x = zeros(T, n_var)
   x_next = deepcopy(x)
   x_prev = deepcopy(x)
-  g = zeros(n_var)
-  d = zeros(n_var)
-  r = zeros(n_obs)
-  u = zeros(n_obs)
-  z = zeros(n_obs)
+  w = deepcopy(x)
+  g = zeros(T, n_var)
+  d = zeros(T, n_var)
+  r = zeros(T, n_obs)
+  u = zeros(T, n_obs)
+  z = zeros(T, n_obs)
   cache = LBFGSCache{T}(n_var, memory)
+
+  out_workspace = (x, x_next, x_prev, r, u, z)
+  inn_workspace = (x, g, d, w, cache)
   workspace = (x, x_next, x_prev, g, d, r, u, z, cache)
-  run = let
+
+  run = let A = AtA.A, b = b, u = u
     wfun1(dst, src) = compute_weights!(weight_uniform, dst, src, q, h)
     ofun1(r) = qreg_objective_uniform(r, q, h)
     
@@ -241,18 +251,19 @@ function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_
     ofun2(r) = qreg_objective_sharp(r, q, epsilon)
 
     function(AtApI, H)
-      # constants/linear maps
-      A = AtApI.A # ugly, confusing, this A is not global!
-      linmaps = (A, b, AtApI, H)
+      ols_linmaps = (AtApI.A, b, AtApI, H)
+      out_linmaps = (A, b)
+      inn_linmaps = (AtApI.A, u, AtApI, H)
+      linmaps = (AtApI.A, b, H)
+
       # Construct the OLS solution to use as our initial guess.
-      w = x_next
-      iter0, _ = __OLS_lbfgs__((x, g, d, w, cache), linmaps, gtol*sqrt(n_var), maxiter, 0)
-      @. x_next = x
+      iter0, _ = __OLS_lbfgs__(inn_workspace, ols_linmaps, gtol, maxiter, 0)
       @. x_prev = x
+
       # Solve the QREG problem
       if version == 1
         # double loop
-        _, _iter, _inner, _converged = __QREG_lbfgs__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
+        _, _iter, _inner, _converged = __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, q, h, rtol, gtol, maxiter, accel)
       elseif version == 2
         #
         # L-BFGS on kernel-smoothed objective
@@ -260,37 +271,17 @@ function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_
         _, _iter, _inner, _converged = __QREG_lbfgs_single__(wfun1, ofun1, workspace, linmaps, rtol, maxiter, accel)
       elseif version == 3
         #
-        # L-BFGS on kernel-smoothed objective; re-calculate QUB matrix
-        #
-        @. r = b
-        mul!(r, A, x, -one(T), one(T))
-        w = map(ri -> weight_uniform(ri, h), r)
-        AtWA = A'*Diagonal(w)*A
-        rho, _ = powm!(AtA - AtWA, ones(T, n_var), maxiter=3)
-        J = Diagonal(AtWA) + abs(rho)*I
-        _, _iter, _inner, _converged = __QREG_lbfgs_single__(wfun1, ofun1, workspace, (A, b, AtApI, J), rtol, maxiter, accel)
-      elseif version == 4
-        #
         # L-BFGS on sharp quadratic approximation
         #
         _, _iter, _inner, _converged = __QREG_lbfgs_single__(wfun2, ofun2, workspace, linmaps, rtol, maxiter, accel)
-      elseif version == 5
-        #
-        # L-BFGS on sharp quadratic approximation; re-calculate QUB matrix
-        #
-        @. r = b
-        mul!(r, A, x, -one(T), one(T))
-        w = map(ri -> weight_sharp(ri, epsilon), r)
-        AtWA = A'*Diagonal(w)*A
-        rho, _ = powm!(AtA - AtWA, ones(T, n_var), maxiter=3)
-        J = Diagonal(AtWA) + abs(rho)*I
-        _, _iter, _inner, _converged = __QREG_lbfgs_single__(wfun2, ofun2, workspace, (A, b, AtApI, J), rtol, maxiter, accel)
+      else
+        _iter, _inner, _converged = 0, 0, false
       end
       _inner += iter0
       return _iter, _inner, _converged
     end
   end
-  iter, inner, converged = with_qub_matrix(run, AtA, n_obs, n_var, n_blk, var_per_blk, lambda, true, normalize)
+  iter, inner, converged = with_qub_matrix(run, AtA, lambda, normalize)
 
   stats = (
     iterations = iter,
@@ -306,13 +297,13 @@ function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T}, x0::Vector{T}, n_
   return x, r, stats
 end
 
-function __QREG_lbfgs__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
+function __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, q, h, rtol, gtol, maxiter, accel)
   # unpack
-  x, x_next, x_prev, g, d, r, u, z, cache = workspace
-  A, b, AtApI, H = linmaps
-  w = x_next
+  x, x_next, x_prev, r, u, z = out_workspace
+  A, b = out_linmaps
+  _, _, AtApI, _ = inn_linmaps
+  cache = last(inn_workspace)
   T = eltype(A)
-  n_var, n_obs = size(A)
 
   # Initialize r = b - A*x
   @. r = b
@@ -336,7 +327,8 @@ function __QREG_lbfgs__(workspace, linmaps, q, h, rtol, gtol, maxiter, accel)
     #
     cache.current_index = 0
     cache.current_size = 0
-    inner_iter, _ = __OLS_lbfgs__((x, g, d, w, cache), (A, u, AtApI, H), gtol*sqrt(n_var), cache.memory_size, 0)
+    maybe_rescale!(x, AtApI.A)
+    inner_iter, _ = __OLS_lbfgs__(inn_workspace, inn_linmaps, gtol, cache.memory_size, 0)
     inner += inner_iter
     if accel
       #
@@ -371,7 +363,7 @@ end
 function __QREG_lbfgs_single__(compute_weights!, objective, workspace, linmaps, rtol, maxiter, accel)
   # unpack
   x, x_next, x_prev, g, d, r, u, z, cache = workspace
-  A, b, _, H = linmaps
+  A, b, H = linmaps
   T = eltype(A)
 
   # Initialize r = b - A*x
@@ -440,6 +432,7 @@ function __QREG_lbfgs_single__(compute_weights!, objective, workspace, linmaps, 
     iter += 1
     converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
   end
+  maybe_unscale!(x, A)
 
   return r, iter, 0, converged
 end
