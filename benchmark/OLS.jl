@@ -1,7 +1,7 @@
 ###
 ### usage:
 ###
-### julia -t 1 OLS.jl 8192 2048 0 1903 blkdiag false 16
+### julia -t 1 OLS.jl 8192 2048 0 1903 0.2
 ###
 
 using Pkg, InteractiveUtils
@@ -12,7 +12,6 @@ end
 
 Pkg.activate(pwd())
 Pkg.instantiate()
-include("utilities.jl")
 
 using QBSolvers
 using Distributions, LinearAlgebra, Statistics, Random
@@ -25,21 +24,16 @@ Pkg.status(); println()
 versioninfo(); println()
 BLAS.get_config() |> display; println()
 
-function main(n, p, λ, seed, corrtype, use_noise, ngroups)
-  iszero(λ) && @assert n > p
-  @assert p > 2^7
-
+function main(n, p, λ, seed, rho)
   # benchmark parameters
   N = 1000 # number of @benchmark samples
   Random.seed!(seed)
-  maxiter = 2*10^3
+  tscale = 1e-6 # report time in milliseconds
 
   results = DataFrame(
     n=Int[],
     p=Int[],
     λ=Float64[],
-    blocks=Int[],
-    blocksize=Int[],
     method=String[],
     time=Float64[],
     iter=Int[],
@@ -48,63 +42,85 @@ function main(n, p, λ, seed, corrtype, use_noise, ngroups)
     gnorm=Float64[],
   )
 
-  # create problem instance
-  Σ = make_Σ(corrtype, p, use_noise, ngroups)
-  A = Transpose(rand(MvNormal(zeros(p), Σ), n)) |> Matrix
-  x = ones(p)
-  b = A*x + 1/p .* randn(n)
-  x0 = zeros(p)
-  println("Condition number of A: ", cond(A))
-  println("Number of blocks in Σ: ", corrtype == "blkdiag" || corrtype == "blkband" ? ngroups : 1)
-  println()
-
-  # LSMR
-  _, _, statsLSMR = solve_OLS_lsmr(A, b; lambda=λ)
-  benchLSMR = @benchmark solve_OLS_lsmr($A, $b; lambda=$λ) samples=N
-  push!(results,
-    (n, p, λ, 1, p, "LSMR",
-      median(benchLSMR.times) * 1e-6, statsLSMR.iterations,
-      statsLSMR.xnorm, statsLSMR.rnorm, statsLSMR.gnorm,
-    )
-  )
-  gnormLSMR = statsLSMR.gnorm
-  cgtol = gnormLSMR^2
-
-  # CG
-  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qub=false)
-  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qub=false)
-  push!(results,
-    (n, p, λ, 1, p, "CG",
-      median(benchCG.times) * 1e-6, statsCG.iterations,
-      statsCG.xnorm, statsCG.rnorm, statsCG.gnorm,
-    )
-  )
-
-  # CG with QUB preconditioner
-  _, _, statsPCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol, use_qub=true)
-  benchPCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol, use_qub=true)
-  push!(results,
-    (n, p, λ, 1, p, "PCG",
-      median(benchPCG.times) * 1e-6, statsPCG.iterations,
-      statsPCG.xnorm, statsPCG.rnorm, statsPCG.gnorm,
-    )
-  )
-
-  for var_per_blk in (2^k for k in 0:8)
-    n_blk = fld(p, var_per_blk)
-    for normalize in (false, true)
-      _, _, stats = solve_OLS(A, b, x0, n_blk;
-        lambda=λ, maxiter=maxiter, gtol=gnormLSMR, use_qub=true, normalize=normalize)
-      benchMM = @benchmark solve_OLS($A, $b, $x0, $n_blk;
-        lambda=$λ, maxiter=$maxiter, gtol=$gnormLSMR, use_qub=true, normalize=$normalize) samples=N
+  # closure
+  record! = let n=n, p=p, λ=λ, results=results, tscale=tscale
+    function record!(alg, bench, stats)
       push!(results,
-        (n, p, λ, n_blk, var_per_blk, normalize ? "QUBn" : "QUB",
-          median(benchMM.times) * 1e-6, stats.iterations,
+        (n, p, λ, alg,
+          median(bench.times) * tscale, stats.iterations,
           stats.xnorm, stats.rnorm, stats.gnorm,
         )
       )
     end
   end
+
+  # create problem instance
+  Σ = [rho^abs(i-j) for i in 1:p, j in 1:p];
+  cholΣ = cholesky!(Symmetric(Σ))
+  A = randn(n, p) * cholΣ.L
+  x = randn(p)
+  b = A*x + 1/sqrt(p) .* randn(n)
+  println("Condition number of A: ", cond(A))
+  println()
+
+  # QR, Julia default
+  if n >= p && iszero(λ)
+    _, _, statsQR = solve_OLS_qr(A, b)
+    benchQR = @benchmark solve_OLS_qr($A, $b) samples=N
+    record!("QR", benchQR, statsQR)
+  end
+
+  # Cholesky
+  _, _, statsCHOL = solve_OLS_chol(A, b; lambda=λ)
+  benchCHOL = @benchmark solve_OLS_chol($A, $b; lambda=$λ) samples=N
+  record!("CHOL", benchCHOL, statsCHOL)
+
+  # LSMR
+  _, _, statsLSMR = solve_OLS_lsmr(A, b; lambda=λ)
+  benchLSMR = @benchmark solve_OLS_lsmr($A, $b; lambda=$λ) samples=N
+  record!("LSMR", benchLSMR, statsLSMR)
+
+  gnormLSMR = statsLSMR.gnorm
+  cgtol = gnormLSMR^2
+
+  # LSQR
+    _, _, statsLSQR = solve_OLS_lsqr(A, b; lambda=λ)
+  benchLSQR = @benchmark solve_OLS_lsqr($A, $b; lambda=$λ) samples=N
+  record!("LSQR", benchLSQR, statsLSQR)
+
+  # CG
+  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol)
+  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol)
+  record!("CG", benchCG, statsCG)
+
+  # QUB closure
+  QUB = let N=N, λ=λ, gnormLSMR=gnormLSMR
+    function(A, b, normalize, alg)
+      _, _, stats = solve_OLS(A, b; lambda=λ, tol=gnormLSMR, normalize=normalize, maxiter=10^4, accel=true)
+      bench = @benchmark solve_OLS($A, $b; lambda=$λ, tol=$gnormLSMR, normalize=$normalize, maxiter=10^4, accel=true) samples=N
+      record!(alg, bench, stats)
+    end
+  end
+
+  QUB(A, b, :none, "QUB1")    # QUB: NO NORMALIZATION
+  QUB(A, b, :qub, "QUB2")     # QUB: DIAG + RANK-1
+  QUB(A, b, :rescale, "QUB3") # QUB: RESCALE
+
+  # L-BFGS closure
+  LBFGS = let N=N, λ=λ, gnormLSMR=gnormLSMR
+    function(A, b, precond, normalize, alg)
+      _, _, stats = solve_OLS_lbfgs(A, b;
+        lambda=λ, tol=gnormLSMR, precond=precond, normalize=normalize)
+      bench = @benchmark solve_OLS_lbfgs($A, $b;
+        lambda=$λ, tol=$gnormLSMR, precond=$precond, normalize=$normalize) samples=N
+      record!(alg, bench, stats)
+    end
+  end
+
+  LBFGS(A, b, :none, :none, "LBFGS0")   # L-BFGS
+  LBFGS(A, b, :qub, :none, "LBFGS1")    # L-BFGS + QUB PRECONDITIONER: NO NORMALIZATION
+  LBFGS(A, b, :qub, :qub, "LBFGS2")     # L-BFGS + QUB PRECONDITIONER: DIAG + RANK-1
+  LBFGS(A, b, :qub, :rescale, "LBFGS3") # L-BFGS + QUB PRECONDITIONER: RESCALE
 
   fmt_time = ft_printf("%5.0f", findfirst(==("time"), names(results)))
   fmt_norm = ft_latex_sn(4, findfirst(==("xnorm"), names(results)) .+ (0:2))
@@ -114,7 +130,7 @@ function main(n, p, λ, seed, corrtype, use_noise, ngroups)
     results;
     formatters = fmt_time,
     header = [
-      "samples", "variables", "λ", "blocks", "block size",
+      "samples", "variables", "λ",
       "method", "time (ms)", "iterations", "xnorm", "rnorm", "gnorm"
     ]
   )
@@ -126,7 +142,7 @@ function main(n, p, λ, seed, corrtype, use_noise, ngroups)
     formatters = (fmt_time, fmt_norm),
     tf = tf_latex_booktabs,
     header = [
-      "samples", "variables", latex_cell"$\lambda$", "blocks", "block size",
+      "samples", "variables", latex_cell"$\lambda$",
       "method", "time (ms)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$\|g\|$"
     ]
   )
@@ -138,7 +154,6 @@ n         = parse(Int, ARGS[1])
 p         = parse(Int, ARGS[2])
 λ         = parse(Float64, ARGS[3])
 seed      = parse(Int, ARGS[4])
-corrtype  = ARGS[5]
-use_noise = parse(Bool, ARGS[6])
-ngroups   = parse(Int, ARGS[7])
-main(n, p, λ, seed, corrtype, use_noise, ngroups)
+rho       = parse(Float64, ARGS[5])
+main(n, p, λ, seed, rho)
+
