@@ -57,6 +57,16 @@ function LinearAlgebra.mul!(y::AbstractVector, C::NormalizedMatrix, x::AbstractV
   return y
 end
 
+function LinearAlgebra.mul!(y::AbstractVector, C::NormalizedMatrix, x::AbstractVector, alpha::Number, beta::Number)
+  T = eltype(C)
+  v = C.v
+  ldiv!(v, Diagonal(C.scale), x)
+  c = dot(C.shift, v)
+  mul!(y, C.A, v, T(alpha), T(beta))
+  @. y = y - T(alpha)*T(c)
+  return y
+end
+
 function LinearAlgebra.mul!(x::AbstractVector, _C::Transpose{<:Any,<:NormalizedMatrix}, y::AbstractVector)
   C = parent(_C)
   T = eltype(C)
@@ -64,6 +74,18 @@ function LinearAlgebra.mul!(x::AbstractVector, _C::Transpose{<:Any,<:NormalizedM
   @. x = C.shift
   mul!(x, transpose(C.A), y, one(T), -T(γ))
   ldiv!(Diagonal(C.scale), x)
+  return x
+end
+
+function LinearAlgebra.mul!(x::AbstractVector, _C::Transpose{<:Any,<:NormalizedMatrix}, y::AbstractVector, alpha::Number, beta::Number)
+  C = parent(_C)
+  T = eltype(C)
+  v = C.v
+  γ = sum(y)
+  @. v = C.shift
+  mul!(v, transpose(C.A), y, one(T), -T(γ))
+  ldiv!(Diagonal(C.scale), v)
+  @. x = T(alpha)*v + T(beta)*x 
   return x
 end
 
