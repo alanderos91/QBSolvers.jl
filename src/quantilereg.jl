@@ -39,8 +39,8 @@ function qreg_loss_uniform(r::T, q::T, h::T) where T <: Real
   return (q-1//2)*r + 1//2*C
 end
 
-weight_uniform(ri, h) = ifelse(abs(ri) > h, sign(ri), ri)
-weight_uniform(ri, q, h) = (q-1//2) + weight_uniform(ri, h)
+weight_uniform(ri, h) = ifelse(abs(ri) > h, sign(ri), ri/h)
+weight_uniform(ri, q, h) = (q-1//2) + 1//2*weight_uniform(ri, h)
 
 function qreg_objective_uniform(r, q, h)
   let r =r, q = q, h = h
