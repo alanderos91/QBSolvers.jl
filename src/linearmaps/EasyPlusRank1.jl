@@ -29,8 +29,8 @@ function EasyPlusRank1(J::matT, u::vecT, v::vecT, alpha, beta) where {matT, vecT
   if size(J, 1) != length(u)
     throw(DimensionMismatch("Matrix `J` is incompatible with rank-1 matrix `uvᵀ`."))
   end
-  aJu = alpha*copy(u); ldiv!(J, aJu)
-  aJv = alpha*copy(v); ldiv!(J, aJv)
+  aJu = inv(alpha)*copy(u); ldiv!(J, aJu)
+  aJv = inv(alpha)*copy(v); ldiv!(J, aJv)
   return EasyPlusRank1(J, u, v, aJu, aJv, T(alpha), T(beta))
 end
 
@@ -42,7 +42,7 @@ function EasyPlusRank1(J::matT, u::vecT, alpha, beta) where {matT, vecT}
   if size(J, 1) != length(u)
     throw(DimensionMismatch("Matrix `J` is incompatible with rank-1 matrix `uuᵀ`."))
   end
-  aJu = alpha*copy(u); ldiv!(J, aJu)
+  aJu = inv(alpha)*copy(u); ldiv!(J, aJu)
   return EasyPlusRank1(J, u, u, aJu, aJu, T(alpha), T(beta))
 end
 
