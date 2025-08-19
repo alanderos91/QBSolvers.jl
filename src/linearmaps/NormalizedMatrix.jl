@@ -3,7 +3,7 @@
 ###
 ### C = (A - 1āᵀ)S⁻¹
 ###
-### so that CᵀC is a correlation matrix.
+### Abstraction for centering and scaling the Gram matrix CᵀC.
 ###
 
 struct NormalizedMatrix{T,matT,vecT1,vecT2} <: AbstractMatrix{T}
@@ -24,7 +24,6 @@ function NormalizedMatrix(A::AbstractMatrix{T};
   n_obs, n_var = size(A)
   shift = similar(A, n_var); mean!(shift, transpose(A))
   scale = std(A, dims=1) |> vec
-  @. scale = scale * sqrt(n_obs - 1)
   matT, vecT1, vecT2 = typeof(A), typeof(u), typeof(v)
   return NormalizedMatrix{T,matT,vecT1,vecT2}(A, n_obs, n_var, shift, scale, u, v)
 end
