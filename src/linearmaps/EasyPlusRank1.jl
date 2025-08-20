@@ -61,8 +61,9 @@ Base.eltype(::EasyPlusRank1{T}) where T = T
 function LinearAlgebra.mul!(y::AbstractVector, H::EasyPlusRank1, x::AbstractVector)
   T = eltype(H)
   J, u, v, alpha, beta = H.J, H.u, H.v, H.alpha, H.beta
-  @. y = u
-  mul!(y, J, x, alpha, beta*dot(v, x))
+  c = beta*dot(v, x)
+  mul!(y, J, x)
+  @. y = y + c*u
   return y
 end
 
