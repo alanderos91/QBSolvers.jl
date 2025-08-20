@@ -6,7 +6,7 @@ using IterativeSolvers
 
 import Base: getindex, size, eltype, view
 import Base: iterate, length, last, isdone, IteratorEltype
-import LinearAlgebra: issymmetric, mul!, ldiv!, *
+import LinearAlgebra: issymmetric, mul!, ldiv!, *, Symmetric
 
 const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
 
@@ -14,7 +14,8 @@ const BLAS_THREADS = Ref{Int}(BLAS.get_num_threads())
 include(joinpath("linearmaps", "GramPlusDiag.jl"))
 include(joinpath("linearmaps", "NormalizedMatrix.jl"))
 include(joinpath("linearmaps", "EasyPlusRank1.jl"))
-export GramPlusDiag, NormalizedMatrix, EasyPlusRank1
+include(joinpath("linearmaps", "SymDiagScale.jl"))
+export GramPlusDiag, NormalizedMatrix, EasyPlusRank1, SymDiagScale
 
 # heuristics
 _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)

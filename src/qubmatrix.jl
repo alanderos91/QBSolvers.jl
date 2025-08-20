@@ -1,10 +1,36 @@
 function with_qub_matrix(f, AtA, lambda, normalize)
   T = eltype(AtA)
+  LANCZOS_ITER = floor(Int, sqrt(size(AtA, 1))) ÷ 2
   POWER_ITER = 3
   #
   # Diagonal (Plus Rank-1) Hessian
   #
-  if normalize == :rescale
+  if normalize == :deflate
+    let
+      # Extract dominant eigenpair of AtA
+      eigenpair = lanczos_ritz_fixed(AtA; maxiter=LANCZOS_ITER, k=1)
+      ((mu,), xi) = eigenpair[1], vec(eigenpair[2])
+
+      # Compute shift and scale factors for a correlation-like matrix
+      @. xi = sqrt(mu) * xi
+      s = compute_main_diagonal(AtA.A, AtA).diag
+      @. s = s - xi ^ 2
+
+      # Form J = √D (AtA - λξξᵀ) √D
+      M = EasyPlusRank1(AtA, xi, xi, similar(xi, 0), similar(xi, 0), one(T), -one(T))
+      JpI = SymDiagScale(M, @. 1 / sqrt(s))
+
+      # Compute spectral radius of J - I on the normalized scale
+      rho = estimate_spectral_radius(JpI, one(T)*I, maxiter=POWER_ITER)
+
+      # Construct the QUB matrix
+      H = EasyPlusRank1((1+rho)*Diagonal(s) + T(lambda)*I, xi, one(T), one(T))
+
+      # Run the solver
+      AtApI = GramPlusDiag(AtA, one(T), T(lambda))
+      f(AtApI, H)
+    end
+  elseif normalize == :rescale
     let
       AtA0 = NormalizedGramPlusDiag(AtA)
       u, s, n = AtA0.A.shift, AtA0.A.scale, AtA.n_obs
