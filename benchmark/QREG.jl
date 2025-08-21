@@ -33,27 +33,26 @@ library("conquer")
 sessionInfo()
 """ |> println
 
-function solve_QREG_conquer(_X, y, q, h)
-  result = rcall(:conquer, X=_X, Y=y, tau=q, h=h, kernel="uniform") # default tol = 1e-04
+function solve_QREG_conquer(_X, y, q, h, tol)
+  result = rcall(:conquer, X=_X, Y=y, tau=q, h=h, kernel="uniform", tol=tol) # default tol = 1e-04
   β̂ = rcopy(result[1])
   iter = rcopy(result[2])
   r = rcopy(result[3])
   return β̂, r, iter
 end
 
-function main(n, p, q, seed, rho)
+function main(n, p, q, seed, ρ)
   @assert n >= p
 
   N = 1000      # number of @benchmark samples
   Random.seed!(seed)
-  tscale = 1e-6 # report time in milliseconds
+  tscale = 1e-9 # report time in seconds
   rtol = 1e-8   # change in objective, relative to previous value
+  gtol = 1e-5
 
   results = DataFrame(
-    n=Int[],
-    p=Int[],
+    ρ=Float64[],
     q=Float64[],
-    h=Float64[],
     method=String[],
     time=Float64[],
     iter=Int[],
@@ -64,36 +63,45 @@ function main(n, p, q, seed, rho)
   )
 
   # create problem instance
-  if iszero(rho)
+  if iszero(ρ)
     Σ = Matrix{Float64}(I, p, p)
   else
-    Σ = [rho^abs(i-j) for i in 1:p, j in 1:p];
+    Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p];
   end
   cholΣ = cholesky!(Symmetric(Σ))
-  X = randn(n, p) * cholΣ.L
-  β = 0.1*ones(p)
+  _X = randn(n, p) * cholΣ.L
+  β = [0.1*ones(p); 1.0]
+  X = [_X ones(n)]
   y0 =  X * β
   y = y0 + rand(TDist(1.5), n) .- Statistics.quantile(TDist(1.5), q)
-  println("Condition number of X: ", cond(X))
+  h = QBSolvers.default_bandwidth(_X)
 
-  # Set bandwidth for both methods
-  h = QBSolvers.default_bandwidth(X)
+  println("seed:    ", seed)
+  println("size(X): ", size(_X, 1), " × ", size(_X, 2))
+  println("cond(X): ", cond(_X))
+  println("ρ:       ", ρ)
+  println("q:       ", q)
+  println("h:       ", h)
+  println()
 
-  record! = let results=results, n=n, p=p, q=q, h=h, tscale=tscale
+  record! = let results=results, ρ=ρ, q=q, tscale=tscale
     function(alg, bench, stats)
+      median_time = median(bench.times) * tscale
       push!(results,
-        (n, p, q, h, alg,
-          median(bench.times) * tscale, stats.iterations,
+        (
+          ρ, q, alg,
+          median_time, stats.iterations,
           stats.xnorm, stats.rnorm,
           stats.loss1, stats.loss2
         )
       )
+      println("$(lpad(alg, 8)) .......... $(round(median_time, digits=6)) seconds")
     end
   end
 
   # MMDeweighting
   β̂, _, iter, _ = MMDeweighting.FastQR(X, y, q; tol=rtol, h=h, verbose=false)
-  benchMMD = @benchmark MMDeweighting.FastQR($X, $y, q; tol=$rtol, h=$h, verbose=false) samples=N
+  benchMMD = @benchmark MMDeweighting.FastQR($X, $y, $q; tol=$rtol, h=$h, verbose=false) samples=N
   r = y - X*β̂
   statsMMD = (;
     iterations=iter,
@@ -105,8 +113,8 @@ function main(n, p, q, seed, rho)
   record!("MMDW", benchMMD, statsMMD)
 
   # conquer
-  β̂, r, iter = solve_QREG_conquer(X, y, q, h)
-  benchCQR = @benchmark solve_QREG_conquer($X, $y, $q, $h) samples=N
+  β̂, r, iter = solve_QREG_conquer(_X, y, q, h, gtol)
+  benchCQR = @benchmark solve_QREG_conquer($_X, $y, $q, $h, $gtol) samples=N
   statsCQR = (;
     iterations=iter,
     xnorm=norm(β̂),
@@ -126,34 +134,42 @@ function main(n, p, q, seed, rho)
   end
 
   QUB(X, y, 1, :none, "QUBd1")    # DOUBLE-LOOP + NO NORMALIZATION
-  QUB(X, y, 1, :qub, "QUBd2")     # DOUBLE-LOOP + DIAG + RANK-1
-  QUB(X, y, 1, :rescale, "QUBd3") # DOUBLE-LOOP + RESCALE
+  QUB(X, y, 1, :std, "QUBd2")     # DOUBLE-LOOP + DIAG + RANK-1
+  QUB(X, y, 1, :corr, "QUBd3")    # DOUBLE-LOOP + DIAG + RANK-1
+  QUB(X, y, 1, :deflate, "QUBd4") # DOUBLE-LOOP + DIAG + RANK-1
+  # QUB(X, y, 1, :rescale, "QUBd5") # DOUBLE-LOOP + RESCALE
   QUB(X, y, 2, :none, "QUBs1")    # LBFGS + NO NORMALIZATION
-  QUB(X, y, 2, :qub, "QUBs2")     # LBFGS + DIAG + RANK-1
-  QUB(X, y, 2, :rescale, "QUBs3") # LBFGS + RESCALE
+  QUB(X, y, 2, :std, "QUBs2")     # LBFGS + DIAG + RANK-1
+  QUB(X, y, 2, :corr, "QUBs3")    # LBFGS + DIAG + RANK-1
+  QUB(X, y, 2, :deflate, "QUBs4") # LBFGS + DIAG + RANK-1
+  # QUB(X, y, 2, :rescale, "QUBs5") # LBFGS + RESCALE
 
   fmt_time = ft_printf("%5.2f", findfirst(==("time"), names(results)))
-  fmt_norm = ft_latex_sn(4, findfirst(==("xnorm"), names(results)) .+ (0:2))
+  fmt_norm = ft_latex_sn(6, findfirst(==("xnorm"), names(results)) .+ (0:2))
 
   # for human readability
+  println()
   pretty_table(
     results;
     formatters = fmt_time,
     header = [
-      "samples", "variables", "q", "bandwidth",
-      "method", "time (ms)", "iterations", "xnorm", "rnorm", "objv1", "objv2",
+      "ρ", "q",
+      "method", "time (s)", "iterations",
+      "xnorm", "rnorm", "objv1", "objv2",
     ]
   )
 
   # for manuscript
+  println()
   pretty_table(
     results;
     backend = Val(:latex),
     formatters = (fmt_time, fmt_norm),
     tf = tf_latex_booktabs,
     header = [
-      "samples", "variables", latex_cell"$q$", latex_cell"$\mu$",
-      "method", latex_cell"time (ms)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", "objv1", "objv2",
+      latex_cell"$\rho$", latex_cell"$q$",
+      "method", latex_cell"time (s)", "iterations",
+      latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$f_{q}(x)$", latex_cell"$h_{q}(x)$",
     ]
   )
 
@@ -164,5 +180,5 @@ n         = parse(Int, ARGS[1])
 p         = parse(Int, ARGS[2])
 q         = parse(Float64, ARGS[3])
 seed      = parse(Int, ARGS[4])
-rho       = parse(Float64, ARGS[5])
-main(n, p, q, seed, rho)
+ρ         = parse(Float64, ARGS[5])
+main(n, p, q, seed, ρ)

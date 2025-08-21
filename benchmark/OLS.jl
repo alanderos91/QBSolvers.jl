@@ -24,16 +24,13 @@ Pkg.status(); println()
 versioninfo(); println()
 BLAS.get_config() |> display; println()
 
-function main(n, p, λ, seed, rho)
+function main(n, p, λ, seed, ρ)
   # benchmark parameters
   N = 1000 # number of @benchmark samples
   Random.seed!(seed)
-  tscale = 1e-6 # report time in milliseconds
+  tscale = 1e-9 # report time in seconds
 
   results = DataFrame(
-    n=Int[],
-    p=Int[],
-    λ=Float64[],
     method=String[],
     time=Float64[],
     iter=Int[],
@@ -43,24 +40,32 @@ function main(n, p, λ, seed, rho)
   )
 
   # closure
-  record! = let n=n, p=p, λ=λ, results=results, tscale=tscale
+  record! = let results=results, tscale=tscale
     function record!(alg, bench, stats)
+      median_time = median(bench.times) * tscale
       push!(results,
-        (n, p, λ, alg,
-          median(bench.times) * tscale, stats.iterations,
+        (
+          alg,
+          median_time, stats.iterations,
           stats.xnorm, stats.rnorm, stats.gnorm,
         )
       )
+      println("$(lpad(alg, 6)) .......... $(round(median_time, digits=6)) seconds")
     end
   end
 
   # create problem instance
-  Σ = [rho^abs(i-j) for i in 1:p, j in 1:p];
+  Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p];
   cholΣ = cholesky!(Symmetric(Σ))
   A = randn(n, p) * cholΣ.L
   x = randn(p)
   b = A*x + 1/sqrt(p) .* randn(n)
-  println("Condition number of A: ", cond(A))
+
+  println("seed:    ", seed)
+  println("size(A): ", size(A, 1), " × ", size(A, 2))
+  println("cond(A): ", cond(A))
+  println("λ:       ", λ)
+  println("ρ:       ", ρ)
   println()
 
   # QR, Julia default
@@ -81,7 +86,7 @@ function main(n, p, λ, seed, rho)
   record!("LSMR", benchLSMR, statsLSMR)
 
   gnormLSMR = statsLSMR.gnorm
-  cgtol = gnormLSMR^2
+  cgtol = 0.1*statsLSMR.rnorm 
 
   # LSQR
     _, _, statsLSQR = solve_OLS_lsqr(A, b; lambda=λ)
@@ -89,22 +94,24 @@ function main(n, p, λ, seed, rho)
   record!("LSQR", benchLSQR, statsLSQR)
 
   # CG
-  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=cgtol, abstol=cgtol)
-  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=$cgtol, abstol=$cgtol)
+  _, _, statsCG = solve_OLS_cg(A, b; lambda=λ, reltol=zero(λ), abstol=cgtol)
+  benchCG = @benchmark solve_OLS_cg($A, $b; lambda=$λ, reltol=zero($λ), abstol=$cgtol)
   record!("CG", benchCG, statsCG)
 
   # QUB closure
   QUB = let N=N, λ=λ, gnormLSMR=gnormLSMR
     function(A, b, normalize, alg)
-      _, _, stats = solve_OLS(A, b; lambda=λ, tol=gnormLSMR, normalize=normalize, maxiter=10^4, accel=true)
-      bench = @benchmark solve_OLS($A, $b; lambda=$λ, tol=$gnormLSMR, normalize=$normalize, maxiter=10^4, accel=true) samples=N
+      _, _, stats = solve_OLS(A, b; lambda=λ, tol=gnormLSMR, normalize=normalize, accel=false)
+      bench = @benchmark solve_OLS($A, $b; lambda=$λ, tol=$gnormLSMR, normalize=$normalize, accel=false) samples=N
       record!(alg, bench, stats)
     end
   end
 
   QUB(A, b, :none, "QUB1")    # QUB: NO NORMALIZATION
-  QUB(A, b, :qub, "QUB2")     # QUB: DIAG + RANK-1
-  QUB(A, b, :rescale, "QUB3") # QUB: RESCALE
+  QUB(A, b, :std, "QUB2")     # QUB: DIAG + RANK-1, standardize
+  QUB(A, b, :corr, "QUB3")    # QUB: DIAG + RANK-1, correlation
+  QUB(A, b, :deflate, "QUB4") # QUB: DIAG + RANK-1, deflate by dominant eigenvalue
+  # QUB(A, b, :rescale, "QUB5") # QUB: RESCALED PROBLEM
 
   # L-BFGS closure
   LBFGS = let N=N, λ=λ, gnormLSMR=gnormLSMR
@@ -119,31 +126,33 @@ function main(n, p, λ, seed, rho)
 
   LBFGS(A, b, :none, :none, "LBFGS0")   # L-BFGS
   LBFGS(A, b, :qub, :none, "LBFGS1")    # L-BFGS + QUB PRECONDITIONER: NO NORMALIZATION
-  LBFGS(A, b, :qub, :qub, "LBFGS2")     # L-BFGS + QUB PRECONDITIONER: DIAG + RANK-1
-  LBFGS(A, b, :qub, :rescale, "LBFGS3") # L-BFGS + QUB PRECONDITIONER: RESCALE
+  LBFGS(A, b, :qub, :std, "LBFGS2")     # L-BFGS + QUB PRECONDITIONER: DIAG + RANK-1, standardize
+  LBFGS(A, b, :qub, :corr, "LBFGS3")    # L-BFGS + QUB PRECONDITIONER: DIAG + RANK-1, correlation
+  LBFGS(A, b, :qub, :deflate, "LBFGS4") # L-BFGS + QUB PRECONDITIONER: DIAG + RANK-1, deflate by dominant eigenvalue
+  # LBFGS(A, b, :qub, :rescale, "LBFGS5") # L-BFGS + QUB PRECONDITIONER: RESCALED PROBLEM
 
-  fmt_time = ft_printf("%5.0f", findfirst(==("time"), names(results)))
+  fmt_time = ft_printf("%5.2f", findfirst(==("time"), names(results)))
   fmt_norm = ft_latex_sn(4, findfirst(==("xnorm"), names(results)) .+ (0:2))
 
   # for human readability
+  println()
   pretty_table(
     results;
     formatters = fmt_time,
     header = [
-      "samples", "variables", "λ",
-      "method", "time (ms)", "iterations", "xnorm", "rnorm", "gnorm"
+      "method", "time (s)", "iterations", "xnorm", "rnorm", "gnorm"
     ]
   )
 
   # for manuscript
+  println()
   pretty_table(
     results;
     backend = Val(:latex),
     formatters = (fmt_time, fmt_norm),
     tf = tf_latex_booktabs,
     header = [
-      "samples", "variables", latex_cell"$\lambda$",
-      "method", "time (ms)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$\|g\|$"
+      "method", "time (s)", "iterations", latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$\|g\|$"
     ]
   )
 
@@ -154,6 +163,6 @@ n         = parse(Int, ARGS[1])
 p         = parse(Int, ARGS[2])
 λ         = parse(Float64, ARGS[3])
 seed      = parse(Int, ARGS[4])
-rho       = parse(Float64, ARGS[5])
-main(n, p, λ, seed, rho)
+ρ         = parse(Float64, ARGS[5])
+main(n, p, λ, seed, ρ)
 
