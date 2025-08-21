@@ -24,6 +24,10 @@ function NormalizedMatrix(A::AbstractMatrix{T};
   n_obs, n_var = size(A)
   shift = similar(A, n_var); mean!(shift, transpose(A))
   scale = std(A, dims=1) |> vec
+  if all(==(one(T)), A[:, end])
+    shift[end] = 0
+    scale[end] = sqrt(n_obs) / sqrt(n_obs-1)
+  end
   matT, vecT1, vecT2 = typeof(A), typeof(u), typeof(v)
   return NormalizedMatrix{T,matT,vecT1,vecT2}(A, n_obs, n_var, shift, scale, u, v)
 end
