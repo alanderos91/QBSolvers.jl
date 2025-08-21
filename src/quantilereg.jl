@@ -254,28 +254,45 @@ function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T};
       ols_linmaps = (AtApI.A, b, AtApI, H)
       out_linmaps = (A, b)
       inn_linmaps = (AtApI.A, u, AtApI, H)
-      linmaps = (AtApI.A, b, H)
 
       # Construct the OLS solution to use as our initial guess.
-      iter0, _ = __OLS_lbfgs__(inn_workspace, ols_linmaps, gtol, maxiter, 0)
+      iter0, _ = __OLS_lbfgs__(inn_workspace, ols_linmaps, gtol, max(n_obs, n_var), 0)
       @. x_prev = x
 
       # Solve the QREG problem
       if version == 1
         # double loop
         _, _iter, _inner, _converged = __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, q, h, rtol, gtol, maxiter, accel)
-      elseif version == 2
-        #
-        # L-BFGS on kernel-smoothed objective
-        #
-        _, _iter, _inner, _converged = __QREG_lbfgs_single__(wfun1, ofun1, workspace, linmaps, rtol, maxiter, accel)
-      elseif version == 3
-        #
-        # L-BFGS on sharp quadratic approximation
-        #
-        _, _iter, _inner, _converged = __QREG_lbfgs_single__(wfun2, ofun2, workspace, linmaps, rtol, maxiter, accel)
       else
-        _iter, _inner, _converged = 0, 0, false
+        @. r = b
+        mul!(r, A, x, -1.0, 1.0)
+        if version == 2
+          #
+          # L-BFGS on kernel-smoothed objective
+          #
+          W = Diagonal(@. ifelse(abs(r) < h, sqrt(1/h), zero(T)))
+          hessian = GramPlusDiag(W*A; gram=gram, alpha=T(1//2), beta=zero(T))
+          solve2 = let
+            function(_, H0)
+              __QREG_lbfgs_single__(wfun1, ofun1, workspace, (AtApI.A, b, H0), rtol, maxiter, accel)
+            end
+          end
+          _, _iter, _inner, _converged = with_qub_matrix(solve2, hessian, zero(T), normalize)
+        elseif version == 3
+          #
+          # L-BFGS on sharp quadratic approximation
+          #
+          W = Diagonal(@. ifelse(abs(r) > h, sqrt(1/h), zero(T)))
+          hessian = GramPlusDiag(W*A; gram=gram, alpha=T(1//2), beta=zero(T))
+          solve3 = let
+            function(_, H0)
+              __QREG_lbfgs_single__(wfun2, ofun2, workspace, (AtApI.A, b, H0), rtol, maxiter, accel)
+            end
+          end
+          _, _iter, _inner, _converged = with_qub_matrix(solve3, hessian, zero(T), normalize)
+        else
+          _iter, _inner, _converged = 0, 0, false
+        end
       end
       _inner += iter0
       return _iter, _inner, _converged
