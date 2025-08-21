@@ -145,7 +145,7 @@ function __OLS_lbfgs__(workspace, linmaps, gtol, maxiter, iter = 0)
     loss_1 = 1//2 * dot(d, w) # 1/2 [|Adₙ₊₁|² + λ|dₙ₊₁|²]
     loss_2 = -dot(g, d)       # ∇ₙᵀdₙ₊₁
     if loss_2 > 0 error("L-BFGS direction was not computed correctly at iteration $(iter)") end
-    while (alpha*alpha*loss_1 + alpha*loss_2 > 0)
+    while (alpha*alpha*loss_1 + 0.5*alpha*loss_2 > 0)
       alpha = 1//2 * alpha
     end
     @. x = x + alpha*d
