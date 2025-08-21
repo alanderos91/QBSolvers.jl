@@ -330,7 +330,14 @@ function __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, 
     maybe_rescale!(x, AtApI.A)
     inner_iter, _ = __OLS_lbfgs__(inn_workspace, inn_linmaps, gtol, cache.memory_size, 0)
     inner += inner_iter
-    if accel
+    iter += 1
+
+    @. r = b
+    mul!(r, A, x, -one(T), one(T))
+    f_prev = f_curr
+    f_curr = qreg_objective_uniform(r, q, h)
+    converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
+    if accel && !converged
       #
       # Nesterov acceleration
       #
@@ -339,22 +346,17 @@ function __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, 
         @. x = (x_next - x_prev)
         @. x_prev = x_next
         @. x = x_next + (k-1)/(k+2)*x
+
+        @. r = b
+        mul!(r, A, x, -one(T), one(T))
+
+        f_prev = f_curr
+        f_curr = qreg_objective_uniform(r, q, h)
       else
         @. x_prev = x
       end
-      @. r = b
-      mul!(r, A, x, -one(T), one(T))
-      f_prev = f_curr
-      f_curr = qreg_objective_uniform(r, q, h)
       k = ifelse(f_curr > f_prev, 1, k+1)
-    else
-      @. r = b
-      mul!(r, A, x, -one(T), one(T))
-      f_prev = f_curr
-      f_curr = qreg_objective_uniform(r, q, h)
     end
-    iter += 1
-    converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
   end
 
   return r, iter, inner, converged
@@ -406,7 +408,9 @@ function __QREG_lbfgs_single__(compute_weights!, objective, workspace, linmaps, 
       f_curr = objective(u)
     end
     @. x = x + alpha*d
-    if accel
+    iter += 1
+    converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
+    if accel && !converged
       #
       # Nesterov acceleration
       #
@@ -429,8 +433,6 @@ function __QREG_lbfgs_single__(compute_weights!, objective, workspace, linmaps, 
     else
       @. r = u
     end
-    iter += 1
-    converged = abs(f_curr - f_prev) < rtol * (f_prev + 1)
   end
   maybe_unscale!(x, A)
 
