@@ -12,39 +12,56 @@ Solves the OLS problem and ridge penalized LS. The LSMR implementation from Iter
 ```julia
 using QBSolvers, LinearAlgebra, Distributions
 
-# block structure of correlation matrix: block diagonal with 16 Toeplitz blocks
-n, p = 16*512, 2*512
-n_blk = 16
-var_per_blk = div(p, n_blk)
-blksizes = repeat([var_per_blk], n_blk)
-S = simulate_group_corr_matrix(Float64, [AutoRegressive(0.8) for _ in 1:n_blk], p, blksizes;
-    m = 8,
-    epsilon = 0.0,
-    verynoisy = false
-)
-
+#
 # simulate a problem instance
-A = Transpose(rand(MvNormal(zeros(p), S), n)) |> Matrix
+#
+n, p, ρ = 16*512, 2*512, 0.5
+Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p]
+cholΣ = cholesky!(Symmetric(Σ))
+A = randn(n, p) * cholΣ.L
 x0 = [k/p for k in 1:p]
 b = A*x0 + 1/p .* randn(n)
-x_init = zeros(p)
 
 #
-# solve it with diagonal QUB approximation (n_blk = 1)
+# solve with QUB; no normalization
 #
-x, r, stats = @time solve_OLS(A, b, x_init, 1; maxiter=10^3, use_qub=true, gtol=1e-6, lambda=0.0)
+x, r, stats = @time solve_OLS(A, b; normalize=:none, tol=1e-3, lambda=0.0);
 stats |> pairs |> display
 
 #
-# solve it with block diagonal QUB approximation (n_blk = 16)
+# solve with QUB; Z-score standardization
 #
-x, r, stats = @time solve_OLS(A, b, x_init, 16; maxiter=10^3, use_qub=true, gtol=1e-6, lambda=0.0)
+x, r, stats = @time solve_OLS(A, b; normalize=:std, tol=1e-3, lambda=0.0);
 stats |> pairs |> display
 
 #
-# compare to LSMR
+# solve with QUB; normalize to correlation matrix
 #
-x, r, stats = @time solve_OLS_lsmr(A, b; lambda=0.0)
+x, r, stats = @time solve_OLS(A, b; normalize=:corr, tol=1e-3, lambda=0.0);
+stats |> pairs |> display
+
+#
+# solve with QUB; deflate top eigenvalue + normalize to correlation matrix
+#
+x, r, stats = @time solve_OLS(A, b; normalize=:deflate, tol=1e-3, lambda=0.0);
+stats |> pairs |> display
+
+#
+# solve with L-BFGS
+#
+x, r, stats = @time solve_OLS_lbfgs(A, b; precond=:none, tol=1e-3, lambda=0.0);
+stats |> pairs |> display
+
+#
+# solve with L-BFGS; QUB preconditioner
+#
+x, r, stats = @time solve_OLS_lbfgs(A, b; precond=:qub, normalize=:deflate, tol=1e-3, lambda=0.0);
+stats |> pairs |> display
+
+#
+# solve with LSMR; wrapped from IterativeSolvers.jl
+#
+x, r, stats = @time solve_OLS_lsmr(A, b; atol=1e-6, btol=1e-6, conlim=0.0, lambda=0.0);
 stats |> pairs |> display
 ```
 
@@ -56,36 +73,41 @@ Minimizes a **smoothed version** of the quantile loss; based on uniform kernel.
 using QBSolvers, LinearAlgebra, Distributions, Statistics
 using MMDeweighting
 
-# block structure of correlation matrix: block diagonal with 16 Toeplitz blocks
-n, p = 16*512, 2*512
-n_blk = 16
-var_per_blk = div(p, n_blk)
-blksizes = repeat([var_per_blk], n_blk)
-S = simulate_group_corr_matrix(Float64, [AutoRegressive(0.8) for _ in 1:n_blk], p, blksizes;
-    m = 8,
-    epsilon = 0.0,
-    verynoisy = false
-)
-
+#
 # simulate a problem instance
+#
+n, p, ρ = 16*512, 2*512, 0.4
 q = 0.5
-A = Transpose(rand(MvNormal(zeros(p), S), n)) |> Matrix
-x0 = 0.1*ones(p)
+Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p]
+cholΣ = cholesky!(Symmetric(Σ))
+A = [randn(n, p) * cholΣ.L ones(n)]
+x0 = 0.1*ones(p+1)
 b = A*x0 + rand(TDist(1.5), n) .- Statistics.quantile(TDist(1.5), q)
-x_init = zeros(p)
 h = QBSolvers.default_bandwidth(A)
 
 #
-# solve it with diagonal QUB approximation (n_blk = p)
+# solve with two-loop algorithm; preconditioned L-BFGS
 #
-x, r, stats = @time solve_QREG(A, b, x_init, p; q=q, h=h, maxiter=10^3, rtol=1e-6, gtol=1e-2, gram=true)
+x, r, stats = @time solve_QREG_lbfgs(A, b; q=q, h=h, version=1, normalize=:none, rtol=1e-6, accel=false);
+stats |> pairs |> display
+
+#
+# solve with two-loop algorithm; preconditioned L-BFGS + Nesterov
+#
+x, r, stats = @time solve_QREG_lbfgs(A, b; q=q, h=h, version=1, normalize=:none, rtol=1e-6, accel=true);
+stats |> pairs |> display
+
+#
+# solve with single-loop algorithm; preconditioned L-BFGS + Nesterov
+#
+x, r, stats = @time solve_QREG_lbfgs(A, b; q=q, h=h, version=2, normalize=:deflate, rtol=1e-6, accel=false);
 stats |> pairs |> display
 
 #
 # solve it with Fast Quantile Regression from MMDeweighting.jl
 #
-x, _, iter, _ = @time MMDeweighting.FastQR(A, b, q; tol=1e-6, h=h, verbose=false)
-r = b - A*x
+x, _, iter, _ = @time MMDeweighting.FastQR(A, b, q; tol=1e-6, h=h, verbose=false);
+r = b - A*x;
 
 stats = (;
     iterations = iter,
@@ -94,36 +116,6 @@ stats = (;
     rnorm = norm(r),
     loss1 = QBSolvers.qreg_objective(r, q),             # check function loss
     loss2 = QBSolvers.qreg_objective_uniform(r, q, h),  # smoothed loss (uniform)
-)
-stats |> pairs |> display
-```
-
-### Boosting in Classification [WIP]
-
-Wraps SAMME implementation in DecisionTree.jl. We implement a QUB-based algorithm to estimate classifier weights for a pre-trained ensemble of weak classifiers.
-
-```julia
-using QBSolvers, LinearAlgebra, Distributions
-
-# load some data; reexported from DecisionTree.jl
-features, labels = QBSolvers.load_data("digits")
-features = Float64.(features)
-labels = string.(labels)
-M = 100 # number of classifiers
-
-#
-# solve with multiclass AdaBoost (aka SAMME)
-#
-model, theta, stats = @time fit_adaboost(labels, features, M)
-stats |> pairs |> display
-
-#
-# solve with QUB
-#
-model, theta, stats = @time fit_classifier(labels, features, M;
-    update=:proj, # projected Newton
-    maxiter=1000,
-    rtol=1e-8
-)
+);
 stats |> pairs |> display
 ```
