@@ -253,7 +253,7 @@ function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T};
     function(AtApI, H)
       ols_linmaps = (AtApI.A, b, AtApI, H)
       out_linmaps = (A, b)
-      inn_linmaps = (AtApI.A, u, AtApI, H)
+      inn_linmaps = (AtApI.A, z, AtApI, H)
 
       # Construct the OLS solution to use as our initial guess.
       iter0, _ = __OLS_lbfgs__(inn_workspace, ols_linmaps, gtol, max(n_obs, n_var), 0)
@@ -325,6 +325,7 @@ function __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, 
   # Initialize r = b - A*x
   @. r = b
   mul!(r, A, x, -one(T), one(T))
+  @. u = r
 
   # Iterate the algorithm map
   iter = 0  # outer iterations; Moreau majorization
@@ -338,7 +339,7 @@ function __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, 
     #   where u = b - zₙ + (2*q-1)*h 1
     #
     prox_abs!(z, r, h)
-    @. u = b - z + (2*q-1)*h
+    @. z = b - z + (2*q-1)*h
     #
     # Solve with QUB; need to reset the L-BFGS cache first
     #
@@ -359,18 +360,21 @@ function __QREG_lbfgs__(out_workspace, out_linmaps, inn_workspace, inn_linmaps, 
       # Nesterov acceleration
       #
       if k > 1
+        gamma = (k-1)/(k+2)
         @. x_next = x
         @. x = (x_next - x_prev)
         @. x_prev = x_next
-        @. x = x_next + (k-1)/(k+2)*x
+        @. x = x_next + gamma*x
 
-        @. r = b
-        mul!(r, A, x, -one(T), one(T))
+        @. z = u
+        @. r = (1+gamma)*r - gamma*u
+        @. u = r
 
         f_prev = f_curr
         f_curr = qreg_objective_uniform(r, q, h)
       else
         @. x_prev = x
+        @. u = r
       end
       k = ifelse(f_curr > f_prev, 1, k+1)
     end
@@ -388,6 +392,7 @@ function __QREG_lbfgs_single__(compute_weights!, objective, workspace, linmaps, 
   # Initialize r = b - A*x
   @. r = b
   mul!(r, A, x, -one(T), one(T))
+  r_prev = copy(r)
 
   # Make sure L-BFGS cache is empty
   cache.current_index = 0
@@ -432,23 +437,26 @@ function __QREG_lbfgs_single__(compute_weights!, objective, workspace, linmaps, 
       # Nesterov acceleration
       #
       if k > 1
+        gamma = (k-1)/(k+2)
         @. x_next = x
         @. x = (x_next - x_prev)
         @. x_prev = x_next
-        @. x = x_next + (k-1)/(k+2)*x
+        @. x = x_next + gamma*x
 
-        @. r = b
-        mul!(r, A, x, -one(T), one(T))
+        @. r = (1+gamma)*u - gamma*r_prev
+        @. r_prev = u
 
         f_prev = f_curr
         f_curr = objective(r)
       else
         @. x_prev = x
         @. r = u
+        @. r_prev = r
       end
       k = ifelse(f_curr > f_prev, 1, k+1)
     else
       @. r = u
+      @. r_prev = r
     end
   end
   maybe_unscale!(x, A)
