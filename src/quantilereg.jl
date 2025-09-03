@@ -51,8 +51,8 @@ end
 
 # sharp approximation
 abs_approx(x, ϵ) = sqrt(x*x + ϵ)
-weight_sharp(ri, ϵ) = 1//2*ri/abs_approx(ri, ϵ)
-weight_sharp(ri, q, ϵ) = (q-1//2) + weight_sharp(ri, ϵ)
+weight_sharp(ri, ϵ) = ri/abs_approx(ri, ϵ)
+weight_sharp(ri, q, ϵ) = (q-1//2) + 1//2*weight_sharp(ri, ϵ)
 
 function qreg_loss_sharp(r::T, q::T, ϵ::T) where T <: Real
   return (q-1//2)*r + 1//2*abs_approx(r, ϵ)
@@ -282,7 +282,7 @@ function solve_QREG_lbfgs(_A::AbstractMatrix{T}, b::Vector{T};
           #
           # L-BFGS on sharp quadratic approximation
           #
-          W = Diagonal(@. ifelse(abs(r) > h, sqrt(1/h), zero(T)))
+          W = Diagonal(@. sqrt(1/abs_approx(r, epsilon)))
           hessian = GramPlusDiag(W*A; gram=gram, alpha=T(1//2), beta=zero(T))
           solve3 = let
             function(_, H0)
