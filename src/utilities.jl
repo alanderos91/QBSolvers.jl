@@ -4,7 +4,7 @@ function estimate_spectral_radius(G::GramPlusDiag, J::Union{Diagonal,UniformScal
   M = GramPlusDiag(
     G.A, G.AtA, J, G.n_obs, G.n_var, G.tmp, one(T), -one(T)
   )
-  v = ones(size(G, 1))
+  v = randn(size(G, 1))
   lambda, _, ch = powm!(M, v; log=true, kwargs...)
   return abs(lambda)
 end
@@ -15,7 +15,7 @@ function estimate_spectral_radius(G, J::Union{Diagonal,UniformScaling}; kwargs..
   M = GramPlusDiag(
     Matrix{T}(undef, 0, 0), G, J, 0, size(G, 1), Vector{T}(undef, 0), one(T), -one(T)
   )
-  v = ones(size(G, 1))
+  v = randn(size(G, 1))
   lambda, _, ch = powm!(M, v; log=true, kwargs...)
   return abs(lambda)
 end
