@@ -23,7 +23,6 @@ PLS = QBSolvers
 
 BLAS.set_num_threads(10)
 QBSolvers.BLAS_THREADS[] = BLAS.get_num_threads()
-
 Pkg.status(); println()
 versioninfo(); println()
 BLAS.get_config() |> display; println()
@@ -41,11 +40,10 @@ function solve_QREG_conquer(_X, y, q, h, tol)
   return β̂, r, iter
 end
 
-function main(n, p, q, seed, ρ)
+function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false)
   @assert n >= p
 
-  N = 1000      # number of @benchmark samples
-  Random.seed!(seed)
+  N = 100      # number of @benchmark samples
   tscale = 1e-9 # report time in seconds
   rtol = 1e-8   # change in objective, relative to previous value
   gtol = 1e-5
@@ -63,22 +61,44 @@ function main(n, p, q, seed, ρ)
   )
 
   # create problem instance
-  if iszero(ρ)
-    Σ = Matrix{Float64}(I, p, p)
-  else
-    Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p];
+  getprob = let n=n, p=p, ρ=ρ, standardize=standardize
+    function(rng)
+      if iszero(ρ)
+        Σ = Matrix{Float64}(I, p, p)
+      else
+        Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p];
+      end
+      cholΣ = cholesky!(Symmetric(Σ))
+      _X = randn(rng, n, p) * cholΣ.U
+      _β = 0.1*ones(p)
+      if standardize
+        X_mean = vec(mean(_X, dims = 1))
+        X_std  = vec(std(_X,  dims = 1))
+        @inbounds for j in 1:p
+            μ = X_mean[j]
+            σj = X_std[j]
+            σj = (σj == 0.0) ? 1.0 : σj
+            @views _X[:, j] .-= μ
+            @views _X[:, j] ./= σj
+        end
+      end
+      if intercept
+        β = [_β; 1.0]
+        X = [_X ones(n)]
+      else
+        β = _β
+        X = _X
+      end
+      y = X*β + rand(rng, TDist(1.5), n) .- Statistics.quantile(TDist(1.5), q)
+      return (y, _X, X)
+    end
   end
-  cholΣ = cholesky!(Symmetric(Σ))
-  _X = randn(n, p) * cholΣ.L
-  β = [0.1*ones(p); 1.0]
-  X = [_X ones(n)]
-  y0 =  X * β
-  y = y0 + rand(TDist(1.5), n) .- Statistics.quantile(TDist(1.5), q)
+  y, _X, X = getprob(Xoshiro(seed))
   h = QBSolvers.default_bandwidth(_X)
 
   println("seed:    ", seed)
-  println("size(X): ", size(_X, 1), " × ", size(_X, 2))
-  println("cond(X): ", cond(_X))
+  println("size(X): ", size(X, 1), " × ", size(_X, 2), ifelse(intercept, "+1", ""))
+  println("cond(X): ", cond(X))
   println("ρ:       ", ρ)
   println("q:       ", q)
   println("h:       ", h)
@@ -101,7 +121,7 @@ function main(n, p, q, seed, ρ)
 
   # MMDeweighting
   β̂, _, iter, _ = MMDeweighting.FastQR(X, y, q; tol=rtol, h=h, verbose=false)
-  benchMMD = @benchmark MMDeweighting.FastQR($X, $y, $q; tol=$rtol, h=$h, verbose=false) samples=N
+  benchMMD = @benchmark MMDeweighting.FastQR(prob[3], prob[1], $q; tol=$rtol, h=$h, verbose=false) samples=N setup=(rng = Xoshiro($seed); prob = $getprob(rng);)
   r = y - X*β̂
   statsMMD = (;
     iterations=iter,
@@ -114,7 +134,7 @@ function main(n, p, q, seed, ρ)
 
   # conquer
   β̂, r, iter = solve_QREG_conquer(_X, y, q, h, gtol)
-  benchCQR = @benchmark solve_QREG_conquer($_X, $y, $q, $h, $gtol) samples=N
+  benchCQR = @benchmark solve_QREG_conquer($_X, $y, $q, $h, $gtol) samples=N setup=(rng = Xoshiro($seed); prob = $getprob(rng);)
   statsCQR = (;
     iterations=iter,
     xnorm=norm(β̂),
@@ -125,60 +145,63 @@ function main(n, p, q, seed, ρ)
   record!("conquer", benchCQR, statsCQR)
 
   # QUB closures
-  QUB = let N=N, q=q, h=h, rtol=rtol
+  QUB = let N=N, q=q, h=h, rtol=rtol, accel=accel, seed=seed
     function(X, y, version, normalize, alg)
-      _, _, stats = solve_QREG_lbfgs(X, y; q=q, h=h, rtol=rtol, version=version, normalize=normalize, accel=true)
-      bench = @benchmark solve_QREG_lbfgs($X, $y; q=$q, h=$h, rtol=$rtol, version=$version, normalize=$normalize, accel=true) samples=N
+      _, _, stats = solve_QREG_lbfgs(X, y; q=q, h=h, rtol=rtol, version=version, normalize=normalize, accel=accel, memory=20)
+      bench = @benchmark solve_QREG_lbfgs($X, $y; q=$q, h=$h, rtol=$rtol, version=$version, normalize=$normalize, accel=$accel, memory=20) samples=N setup=(rng = Xoshiro($seed); prob = $getprob(rng);)
       record!(alg, bench, stats)
     end
   end
 
-  QUB(X, y, 1, :none, "QUBd1")    # DOUBLE-LOOP + NO NORMALIZATION
-  QUB(X, y, 1, :std, "QUBd2")     # DOUBLE-LOOP + DIAG + RANK-1
-  QUB(X, y, 1, :corr, "QUBd3")    # DOUBLE-LOOP + DIAG + RANK-1
-  QUB(X, y, 1, :deflate, "QUBd4") # DOUBLE-LOOP + DIAG + RANK-1
-  # QUB(X, y, 1, :rescale, "QUBd5") # DOUBLE-LOOP + RESCALE
-  QUB(X, y, 2, :none, "QUBs1")    # LBFGS + NO NORMALIZATION
-  QUB(X, y, 2, :std, "QUBs2")     # LBFGS + DIAG + RANK-1
-  QUB(X, y, 2, :corr, "QUBs3")    # LBFGS + DIAG + RANK-1
-  QUB(X, y, 2, :deflate, "QUBs4") # LBFGS + DIAG + RANK-1
-  # QUB(X, y, 2, :rescale, "QUBs5") # LBFGS + RESCALE
+  QUB(X, y, 1, :none,    "QUBd0") # DOUBLE-LOOP
+  QUB(X, y, 1, :deflate, "QUBd1") # DOUBLE-LOOP + DEFLATE
+  QUB(X, y, 2, :none,    "QUBs0") # LBFGS
+  QUB(X, y, 2, :deflate, "QUBs1") # LBFGS + DEFLATE
+  # QUB(X, y, 3, :none,    "QUBt0") # LBFGS
+  # QUB(X, y, 3, :deflate, "QUBt1") # LBFGS + DEFLATE
 
-  fmt_time = ft_printf("%5.2f", findfirst(==("time"), names(results)))
-  fmt_norm = ft_latex_sn(6, findfirst(==("xnorm"), names(results)) .+ (0:2))
+  if isinteractive()
+    pretty_table(results)
+  else
+    fmt_time = ft_printf("%5.4f", findfirst(==("time"), names(results)))
+    fmt_norm = ft_latex_sn(6, findfirst(==("xnorm"), names(results)) .+ (0:2))
 
-  # for human readability
-  println()
-  pretty_table(
-    results;
-    formatters = fmt_time,
-    header = [
-      "ρ", "q",
-      "method", "time (s)", "iterations",
-      "xnorm", "rnorm", "objv1", "objv2",
-    ]
-  )
+    # for human readability
+    println()
+    pretty_table(
+      results;
+      formatters = fmt_time,
+      header = [
+        "ρ", "q",
+        "method", "time (s)", "iterations",
+        "xnorm", "rnorm", "objv1", "objv2",
+      ]
+    )
 
-  # for manuscript
-  println()
-  pretty_table(
-    results;
-    backend = Val(:latex),
-    formatters = (fmt_time, fmt_norm),
-    tf = tf_latex_booktabs,
-    header = [
-      latex_cell"$\rho$", latex_cell"$q$",
-      "method", latex_cell"time (s)", "iterations",
-      latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$f_{q}(x)$", latex_cell"$h_{q}(x)$",
-    ]
-  )
+    # for manuscript
+    println()
+    pretty_table(
+      results;
+      backend = Val(:latex),
+      formatters = (fmt_time, fmt_norm),
+      tf = tf_latex_booktabs,
+      header = [
+        latex_cell"$\rho$", latex_cell"$q$",
+        "method", latex_cell"time (s)", "iterations",
+        latex_cell"$\|x\|$", latex_cell"$\|r\|$", latex_cell"$f_{q}(x)$", latex_cell"$h_{q}(x)$",
+      ]
+    )
+  end
 
   return nothing
 end
 
-n         = parse(Int, ARGS[1])
-p         = parse(Int, ARGS[2])
-q         = parse(Float64, ARGS[3])
-seed      = parse(Int, ARGS[4])
-ρ         = parse(Float64, ARGS[5])
-main(n, p, q, seed, ρ)
+if !isinteractive()
+  n         = parse(Int, ARGS[1])
+  p         = parse(Int, ARGS[2])
+  q         = parse(Float64, ARGS[3])
+  seed      = parse(Int, ARGS[4])
+  ρ         = parse(Float64, ARGS[5])
+  main(n, p, q, seed, ρ; standardize=true, intercept=true, accel=true)
+end
+
