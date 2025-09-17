@@ -64,9 +64,8 @@ function run_experiment_time(n, p, X, y, t_scale_list::Vector{Float64})
     lsq_box_QUB_woodbury!(X, y; args..., method=:woodbury,    use_nesterov=true)
     lsq_box_QUB_woodbury!(X, y; args..., method=:QUB,    use_nesterov=false)
     lsq_box_QUB_woodbury!(X, y; args..., method=:QUB,    use_nesterov=true)
-    DD = X'*X
-    prox_wTV_MM(y, maxit = 10000, w = w0, eps = 1e-6, verbose=false)
-    prox_wTV_MM(y, maxit = 10000, w = w0, eps = 1e-6, verbose=false)
+    prox_wTV_MM(y, maxit = 100, w = w0, eps = 1e-6, verbose=false, use_nesterov=false)
+    prox_wTV_MM(y, maxit = 100, w = w0, eps = 1e-6, verbose=false, use_nesterov=true)
 
     # Run 3 methods
     b0 = @benchmark lsq_box_QUB_woodbury!($X, $y; $args..., method=:proj_newton, use_thomas=false, use_nesterov=false)
