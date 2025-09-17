@@ -5,7 +5,7 @@ function estimate_spectral_radius(G::GramPlusDiag, J::Union{Diagonal,UniformScal
   # M = AᵀA - J
   T = eltype(G)
   M = GramPlusDiag(
-    G.A, G.AtA, J, G.n_obs, G.n_var, G.tmp, one(T), -one(T)
+  G.A, G.AtA, J, G.n_obs, G.n_var, G.tmp, one(T), -one(T)
   )
   v = randn(size(G, 1))
   lambda, _, ch = powm!(M, v; log=true, kwargs...)
@@ -16,7 +16,7 @@ function estimate_spectral_radius(G, J::Union{Diagonal,UniformScaling}; kwargs..
   # M = AᵀA - J
   T = eltype(G)
   M = GramPlusDiag(
-    Matrix{T}(undef, 0, 0), G, J, 0, size(G, 1), Vector{T}(undef, 0), one(T), -one(T)
+  Matrix{T}(undef, 0, 0), G, J, 0, size(G, 1), Vector{T}(undef, 0), one(T), -one(T)
   )
   v = randn(size(G, 1))
   lambda, _, ch = powm!(M, v; log=true, kwargs...)
@@ -40,6 +40,8 @@ function run_power_method!(v, M; maxiter = maximum(size(M)))
   return abs(lambda)
 end
 
+run_power_method(M; maxiter = maximum(size(M))) = run_power_method!(randn(size(M, 1)), M; maxiter=maxiter)
+
 """
     simple_lanczos!(A, v; maxiter::Int = 1)
 
@@ -55,32 +57,32 @@ function simple_lanczos!(A, v; maxiter::Int = 1)
   # adapted from Caleb's code
   S = eltype(v)
   n = length(v)
-
+  
   Q = zeros(S, n, maxiter)      # Krylov basis (columns)
   α = zeros(S, maxiter)         # main diagonal of T
   β = zeros(S, maxiter-1)       # off-diagonal of T
-
+  
   q_prev = zeros(S, n)
   q = v / max(norm(v), eps(S))  # robust normalization
   Q[:, 1] = q
-
+  
   z = similar(v)                # single reusable buffer z = A*q
-
+  
   for k in 1:maxiter
     mul!(z, A, q)
     α[k] = dot(q, z)
-
+    
     if k > 1
       @. z = z - β[k-1] * q_prev
     end
     @. z = z - α[k] * q
-
+    
     # Full re-orthogonalization for robustness at small basis size
     @views for i in 1:k-1
       c = dot(Q[:, i], z)
       @. z = z - c*Q[:, i]
     end
-
+    
     if k < maxiter
       β[k] = norm(z)
       if isapprox(β[k], zero(S))
@@ -91,7 +93,7 @@ function simple_lanczos!(A, v; maxiter::Int = 1)
       Q[:, k+1] = q
     end
   end
-
+  
   return α, β, Q
 end
 
@@ -118,16 +120,6 @@ function lanczos_ritz_fixed!(A, v; maxiter::Int=10, k::Int=1)
 end
 
 lanczos_ritz_fixed(A; kwargs...) = lanczos_ritz_fixed!(A, ones(eltype(A), size(A, 2)); kwargs...)
-
-function eigenvalue_max(A::Matrix{T}; iters::Int = 10) where T
-  n = size(A, 1)
-  b = randn(T, n)
-  for _ in 1:iters
-    b = A * b
-    b ./= norm(b)
-  end
-  return dot(b, A * b)
-end
 
 #
 # Efficient computation of AtA (block) diagonal

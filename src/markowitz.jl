@@ -60,7 +60,7 @@ function MeanVarianceProblem(μ::Vector{T}, Σ::Matrix{T}, r::T;
   p1 = zeros(T, n)
   p2 = zeros(T, n)
   
-  λ = eigenvalue_max(Σ .- Diagonal(diag(Σ)))
+  λ = run_power_method(Σ .- Diagonal(diag(Σ)), maxiter=4)
   Λ = diag(Σ) .+ λ
   
   return MeanVarianceProblem{T}(μ, Σ, r, maxiter, tol, use_nesterov, verbose,
@@ -195,7 +195,7 @@ function mean_variance_mle(μ::Vector{T}, Σ::Matrix{T}, r::T;
   D_inv_sqrt = 1.0 ./ D_sqrt
   
   Σ_0 = Diagonal(D_inv_sqrt) * Σ * Diagonal(D_inv_sqrt)
-  λ = eigenvalue_max(Σ_0 .- Diagonal(diag(Σ_0)))
+  λ = run_power_method(Σ_0 .- Diagonal(diag(Σ_0)), maxiter=4)
   Λ = diag(Σ_0) .+ λ
   μ_tilde = D_inv_sqrt .* μ
   
