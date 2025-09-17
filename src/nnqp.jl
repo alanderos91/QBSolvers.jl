@@ -35,10 +35,7 @@ function NQUB_nqp_TwoMat(P::AbstractMatrix{T}, q::AbstractVector{T};
   
   if correlation_eigenvalue
     diagA1 = diag(A1)
-    SA1 = Diagonal(sqrt.(1 ./diagA1)) * A1 * Diagonal(sqrt.(1 ./diagA1))
-    @turbo for i in 1:n
-      SA1[i,i] -= 1.0
-    end
+    SA1 = Diagonal(sqrt.(1 ./diagA1)) * A1 * Diagonal(sqrt.(1 ./diagA1)) - 1.0*I
     λmax = run_power_method(SA1, maxiter = 4)
     cblk = @. (1 + λmax) * diagA1 + λridge
   else

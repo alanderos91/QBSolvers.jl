@@ -4,7 +4,6 @@ using LinearAlgebra, SparseArrays, Statistics, Random
 using Printf
 using IterativeSolvers
 using Base.Threads
-using LoopVectorization
 
 import Base: getindex, size, eltype, view
 import Base: iterate, length, last, isdone, IteratorEltype
