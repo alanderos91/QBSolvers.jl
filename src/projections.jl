@@ -346,3 +346,169 @@ function dykstra_proj!(
   return out
 end
 
+#
+# Soft-Thresholding & ℓ1-ball Projection
+#
+
+"""
+    soft_threshold!(dest, v, τ)
+
+Scalar soft-threshold: `dest[i] = sign(v[i])*max(|v[i]| - τ, 0)`.
+`τ` must be a scalar. No allocations.
+"""
+function soft_threshold!(dest::AbstractVector{T}, v::AbstractVector{T}, τ::T) where {T<:Real}
+    @inbounds for i in eachindex(v)
+        vi = v[i]
+        avi = abs(vi)
+        dest[i] = avi > τ ? copysign(avi - τ, vi) : zero(T)
+    end
+    return dest
+end
+
+"""
+    _l1_proj_threshold(z, t) -> τ
+
+Return the soft-threshold τ for projecting `z` onto the ℓ1-ball {x : ||x||₁ ≤ t}.
+Guaranteed to return a finite scalar; never returns `nothing`.
+
+No-sorting Condat-style implementation:
+find τ ∈ [0, maximum(abs.(z))] such that sum(max(abs(z) .- τ, 0)) = t
+via adaptive bisection (numerically exact up to floating-point precision).
+"""
+function _l1_proj_threshold(z::AbstractVector{T}, t::T) where {T<:Real}
+    # promote to a floating type for robust arithmetic
+    TF = float(T)
+    if !(isfinite(t)) || t < 0
+        throw(ArgumentError("t must be finite and ≥ 0, got t = $t"))
+    end
+    n = length(z)
+    n == 0 && return zero(TF)
+
+    # quick pass: ||z||₁ and max|z|
+    s1  = zero(TF)
+    zmx = zero(TF)
+    @inbounds @simd for i in eachindex(z)
+        ai = abs(TF(z[i]))
+        s1 += ai
+        if ai > zmx
+            zmx = ai
+        end
+    end
+
+    # already inside the ball → τ = 0
+    if s1 ≤ TF(t)
+        return zero(TF)
+    end
+    # trivial cases: radius 0 or all zeros → τ = max|z|
+    if t == zero(T) || zmx == zero(TF)
+        return zmx
+    end
+
+    # bisection for τ on [0, zmx]
+    lo  = zero(TF)
+    hi  = zmx
+    tol = eps(TF)
+
+    @inbounds while hi - lo > max(tol, eps(TF) * (one(TF) + hi))
+        τ = (lo + hi) / 2
+        s = zero(TF)
+        @simd for i in eachindex(z)
+            d = abs(TF(z[i])) - τ
+            s += ifelse(d > 0, d, zero(TF))
+        end
+        if s > TF(t)
+            lo = τ        # τ too small → increase
+        else
+            hi = τ        # τ too large → decrease
+        end
+        # early exit if equality is already matched tightly
+        if abs(s - TF(t)) ≤ max(tol, eps(TF) * max(s, TF(t), one(TF)))
+            hi = τ
+            break
+        end
+    end
+
+    return hi  # τ
+end
+
+"""
+    proj_l1_ball!(dest, z, t; tol=eps(eltype(dest)))
+
+Project vector `z` onto the ℓ₁-ball { x : ||x||₁ ≤ t }.
+This version delegates the threshold search to `_l1_proj_threshold(z, t)`,
+then performs an in-place soft-thresholding into `dest`.
+
+- Returns `dest`.
+- If `||z||₁ ≤ t`, `_l1_proj_threshold` returns 0, and we simply copy `z`.
+"""
+function proj_l1_ball!(
+    dest::AbstractVector{T}, z::AbstractVector{<:Real}, t::Real; tol::T = eps(T)
+) where {T<:AbstractFloat}
+    @assert length(dest) == length(z)
+
+    # Get the global soft-threshold τ for the l1 projection
+    τF = _l1_proj_threshold(z, t)    # may be Float32/Float64 depending on z,t
+    τ  = T(τF)                       # convert to dest's element type
+
+    # Fast path: τ == 0 ⇒ already inside the ball → copy
+    if τ == zero(T)
+        @inbounds dest .= T.(z)
+        return dest
+    end
+
+    # Soft-threshold with τ (with a small tolerance for ties/rounding)
+    thr = τ + tol
+    @inbounds @simd for i in eachindex(z, dest)
+        xi  = T(z[i])
+        axi = abs(xi)
+        dest[i] = axi > thr ? copysign(axi - τ, xi) : zero(T)
+    end
+    return dest
+end
+
+"""
+    proj_l1_ball(x, t) -> y
+
+Functional ℓ1-ball projection. Allocates a new dense vector `y`.
+"""
+function proj_l1_ball(x::AbstractVector{<:Real}, t::Real)
+    s1 = sum(abs, x)
+    if s1 ≤ t
+        return copy(x)
+    end
+    τ1 = _l1_proj_threshold(x, t)
+    return sign.(x) .* max.(abs.(x) .- τ1, 0)
+end
+
+"""
+    proj_l1_ball_sparse(x, t) -> SparseVector
+
+Functional ℓ1-ball projection. Returns a `SparseVector`
+without creating a dense result first.
+"""
+function proj_l1_ball_sparse(x::AbstractVector{T}, t::Real) where {T<:Real}
+  s1 = sum(abs, x)
+  if s1 ≤ t
+    return sparsevec(x)  # drop zeros automatically
+  end
+  τ = _l1_proj_threshold(x, T(t))
+  
+  n = length(x)
+  # Count nonzeros after shrink
+  nnz = count(i -> abs(x[i]) > τ, 1:n)
+  I = Vector{Int}(undef, nnz)
+  V = Vector{T}(undef, nnz)
+  
+  k = 0
+  @inbounds for i in 1:n
+    xi = x[i]; axi = abs(xi)
+    if axi > τ
+      k += 1
+      I[k] = i
+      V[k] = copysign(axi - τ, xi)
+    end
+  end
+  return SparseVector(n, I[1:k], V[1:k])
+end
+
+

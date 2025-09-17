@@ -26,6 +26,7 @@ include("utilities.jl")
 include("projections.jl")
 include("qubmatrix.jl")
 include("lbfgs.jl")
+include("BlockedLS.jl")
 
 # Problems
 include("leastsquares.jl")
@@ -41,5 +42,8 @@ export mean_variance_mle
 
 include("nnqp.jl")
 export NQUB_nqp_TwoMat
+
+include("lasso.jl")
+export lasso_prox_newton_woodbury!, fista_l1_ball, projected_newton_l1!
 
 end # module

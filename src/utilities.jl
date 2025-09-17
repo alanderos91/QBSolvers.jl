@@ -69,7 +69,7 @@ function simple_lanczos!(A, v; maxiter::Int = 1)
   z = similar(v)                # single reusable buffer z = A*q
   
   for k in 1:maxiter
-    mul!(z, A, q)
+    __matvec__(z, A, q)         # wrapper for computing matvec product; see Misc section below
     α[k] = dot(q, z)
     
     if k > 1
@@ -121,6 +121,54 @@ end
 
 lanczos_ritz_fixed(A; kwargs...) = lanczos_ritz_fixed!(A, ones(eltype(A), size(A, 2)); kwargs...)
 
+"""
+    lmax_SASmI!(S_A1, s, w_p1, w_p2, out; iters=4, v0=nothing)
+
+Estimate `λ_max(S*A1*S - I)` with a few power iterations.
+Returns `(λmax, v)` where `v` is the final normalized vector.
+"""
+function lmax_SASmI_W!(W, s, w_p1, w_p2, out, w_k; iters::Int=4, v0=nothing)
+  T = eltype(s)
+  p = length(s)
+  v = v0 === nothing ? randn(T, p) : copy(v0)
+  v ./= max(norm(v), eps(T))
+  
+  λmax = zero(T)
+  @inbounds for _ in 1:iters
+    apply_SASmI_W!(out, v, W, s, w_p1, w_p2, w_k)
+    nrm = norm(out)
+    if nrm == 0
+      λmax = zero(T)
+      break
+    end
+    @. v = out / nrm
+    λmax = dot(v, out)                           
+  end
+  return λmax, v
+end
+
+"""
+    apply_SASmI_W!(out, v, S_A1, s, w_p1, w_p2)
+
+Compute `out = (S*A1*S - I) * v` in-place.
+
+- `S_A1`: `Symmetric(A1, :U)`; only upper of `A1` is valid.
+- `s`: diagonal of `S = diag(1 ./ sqrt.(diagA1))`.
+- `w_p1`, `w_p2`: p-vectors preallocated work buffers.
+
+Returns `out`.
+"""
+function apply_SASmI_W!(out, v, W, s, w_p1, w_p2, w_k)
+  @inbounds @simd for i in eachindex(v)           # w_p1 = S * v
+    w_p1[i] = s[i] * v[i]
+  end
+  mul!(w_k, transpose(W), w_p1)                   # w_k = W' * (S*v)         (k)
+  mul!(w_p2, W, w_k)                              # w_p2 = W * w_k           (p)
+  @inbounds @simd for i in eachindex(v)           # out = S * (-w_p2) - v
+    out[i] = s[i] * (-w_p2[i]) - v[i]
+  end
+  return out
+end
 #
 # Efficient computation of AtA (block) diagonal
 #
@@ -207,6 +255,68 @@ function woodbury_solve(V::Matrix{Float64}, λ::Vector{Float64}, μ::Vector{Floa
   return result
 end
 
+"""
+    woodbury_solve!(d, V, λ, μ, u, w_p1, w_p2, Msmall)
+
+Solve for `d` in:
+    d = (Diag(μ) + V*Diag(λ)*V') \\ u
+using the Woodbury identity. Only the small k×k system is factorized.
+
+- `V` is m×k
+- `λ` is length k
+- `μ` is length m (diagonal block)
+- `u` is length m
+- `w_p1`, `w_p2` are m-length workspaces
+- `Msmall` is k×k (workspace for the small system)
+
+No heap allocations besides what the linear solver needs.
+"""
+function woodbury_solve!(d::AbstractVector{T},
+  V::AbstractMatrix{T},
+  λ::AbstractVector{T},
+  μ::AbstractVector{T},
+  u::AbstractVector{T},
+  w_p1::AbstractVector{T},
+  w_p2::AbstractVector{T},
+  Msmall::AbstractMatrix{T},
+  ) where {T<:Real}
+  #
+  m = size(V, 1)           # = |F|
+  k = size(V, 2)           # rank
+  
+  # Safety clamps to avoid division by 0 / Inf / NaN.
+  ϵ = eps(T)
+  @views λsafe = max.(λ, ϵ)
+  @views μsafe = max.(μ, ϵ)
+  
+  # w_p1 = D^{-1} u
+  @views @. w_p1[1:m] = u / μsafe
+  
+  # Msmall = Diag(λ)^{-1} + V' * D^{-1} * V
+  @views Ms = Msmall[1:k, 1:k]
+  fill!(Ms, zero(T))  # clear stale values
+  
+  @views begin
+    for j in 1:k
+      @. w_p2[1:m] = V[:, j] / μsafe
+      Ms[:, j] = transpose(V) * view(w_p2, 1:m)
+    end
+    for i in 1:k
+      Ms[i, i] += inv(λsafe[i])
+    end
+  end
+  
+  # Solve Ms * w = V' * (D^{-1} u)
+  rhs = transpose(V) * view(w_p1, 1:m)
+  w = Ms \ rhs
+  
+  # d = D^{-1} u - D^{-1} V w
+  z = V * w
+  @views @. d = w_p1[1:m] - z / μsafe
+  
+  return d
+end
+
 #
 # Misc
 #
@@ -225,3 +335,43 @@ end
 function active_set(x, grad)
   return findall(.!(x .< 1e-10 .&& grad .> 0)) 
 end
+
+"""
+    col_sumsq!(d, X)
+
+Compute `d[j] = sum(X[:,j].^2)`; i.e., the diagonal of `X'X`.
+Threaded loop; no allocations besides input/output.
+"""
+function col_sumsq!(d::AbstractVector{T}, X::AbstractMatrix{T}) where {T<:AbstractFloat}
+  @assert length(d) == size(X,2)
+  @threads for j in 1:size(X,2)
+    s = zero(T)
+    @inbounds @simd for i in 1:size(X,1)
+      x = X[i,j]
+      s += x*x
+    end
+    d[j] = s
+  end
+  return d
+end
+
+"""
+    loss_ls(X, y, β)
+
+Least-squares loss: `0.5 * ||Xβ - y||^2`.
+"""
+loss_ls(X, y, β) = 0.5 * norm(X*β - y)^2
+
+"""
+    pg_residual(X, y, β, t)
+
+Prox-gradient residual for the ℓ1-ball formulation (∞-norm).
+"""
+pg_residual(X, y, β, t) = norm(β .- proj_l1_ball(β .- X'*(X*β - y), t), Inf)
+
+# if A is a matrix, just dispatch to mul!()
+__matvec__(out, A::AbstractMatrix, x) = mul!(out, A, x)
+
+# otherwise, assume A is a function-like object with two arguments
+__matvec__(out, Afun!, x) = Afun!(out, x)
+
