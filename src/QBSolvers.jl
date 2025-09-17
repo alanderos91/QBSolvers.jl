@@ -3,6 +3,7 @@ module QBSolvers
 using LinearAlgebra, SparseArrays, Statistics, Random
 using IterativeSolvers
 using Base.Threads
+using LoopVectorization
 
 import Base: getindex, size, eltype, view
 import Base: iterate, length, last, isdone, IteratorEltype
@@ -37,5 +38,8 @@ export solve_QREG, solve_QREG_lbfgs
 
 include("markowitz.jl")
 export mean_variance_mle
+
+include("nnqp.jl")
+export NQUB_nqp_TwoMat
 
 end # module

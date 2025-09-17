@@ -164,3 +164,64 @@ maybe_unscale!(x, A) = nothing
 maybe_rescale!(x, A::NormalizedMatrix) = _apply_scaling_(*, x, A)
 maybe_unscale!(x, A::NormalizedMatrix) = _apply_scaling_(/, x, A)
 
+#
+# Application of Woodbury and Sherman-Morrison Formulas
+#
+
+function woodbury_inverse(V::Matrix{Float64}, λ::Vector{Float64}, μ::Vector{Float64})
+  # A = V * Diagonal(λ) * V' + Diagonal(μ)
+  Dinv = Diagonal(1.0 ./ μ)
+  Cinv = Diagonal(1.0 ./ λ)
+  
+  middle = Cinv + V' * Dinv * V
+  middle_inv = inv(middle)
+  
+  Ainv = Dinv - Dinv * V * middle_inv * V' * Dinv
+  return Ainv
+end
+
+function woodbury_solve(V::Matrix{Float64}, λ::Vector{Float64}, μ::Vector{Float64}, u::Vector{Float64})
+  # Efficiently compute A⁻¹ * u where A = V*Diagonal(λ)*V' + Diagonal(μ)
+  
+  @assert size(V, 1) == length(μ) == length(u)
+  @assert size(V, 2) == length(λ)
+  
+  Dinv = Diagonal(1.0 ./ μ)
+  Cinv = Diagonal(1.0 ./ λ)
+  
+  # Step 1: z = D⁻¹ * u
+  z = Dinv * u
+  
+  # Step 2: B = C⁻¹ + V' * D⁻¹ * V
+  B = Cinv + V' * Dinv * V
+  
+  # Step 3: rhs = V' * z
+  rhs = V' * z
+  
+  # Step 4: solve B \ rhs
+  temp = B \ rhs
+  
+  # Step 5: final result
+  result = z - Dinv * V * temp
+  
+  return result
+end
+
+#
+# Misc
+#
+function generate_decay_correlated_matrix(n, p, base_rho)
+  Σ = [base_rho^abs(i - j) for i in 1:p, j in 1:p]
+  L = cholesky(Σ).L  
+  Z = rand(n, p)
+  X = Z * L  
+  return X
+end
+
+function mask_set(x, grad)
+  return findall(x .< 1e-10 .&& grad .> 0)
+end
+
+function active_set(x, grad)
+  return findall(.!(x .< 1e-10 .&& grad .> 0)) 
+end
