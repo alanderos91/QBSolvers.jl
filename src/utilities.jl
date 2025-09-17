@@ -1,3 +1,6 @@
+#
+# Functions for computing spectral radius
+#
 function estimate_spectral_radius(G::GramPlusDiag, J::Union{Diagonal,UniformScaling}; kwargs...)
   # M = AᵀA - J
   T = eltype(G)
@@ -115,6 +118,16 @@ function lanczos_ritz_fixed!(A, v; maxiter::Int=10, k::Int=1)
 end
 
 lanczos_ritz_fixed(A; kwargs...) = lanczos_ritz_fixed!(A, ones(eltype(A), size(A, 2)); kwargs...)
+
+function eigenvalue_max(A::Matrix{T}; iters::Int = 10) where T
+  n = size(A, 1)
+  b = randn(T, n)
+  for _ in 1:iters
+    b = A * b
+    b ./= norm(b)
+  end
+  return dot(b, A * b)
+end
 
 #
 # Efficient computation of AtA (block) diagonal

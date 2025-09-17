@@ -1,8 +1,8 @@
 module QBSolvers
 
-using BlockArrays
-using LinearAlgebra, Statistics, Random
+using LinearAlgebra, SparseArrays, Statistics, Random
 using IterativeSolvers
+using Base.Threads
 
 import Base: getindex, size, eltype, view
 import Base: iterate, length, last, isdone, IteratorEltype
@@ -22,6 +22,7 @@ _cache_gram_heuristic_(A::AbstractMatrix) = size(A, 1) >= size(A, 2)
 
 # Other helpful abstractions
 include("utilities.jl")
+include("projections.jl")
 include("qubmatrix.jl")
 include("lbfgs.jl")
 
@@ -33,5 +34,8 @@ export solve_OLS, solve_OLS_lbfgs,
 
 include("quantilereg.jl")
 export solve_QREG, solve_QREG_lbfgs
+
+include("markowitz.jl")
+export mean_variance_mle
 
 end # module
