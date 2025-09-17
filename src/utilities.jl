@@ -375,3 +375,42 @@ __matvec__(out, A::AbstractMatrix, x) = mul!(out, A, x)
 # otherwise, assume A is a function-like object with two arguments
 __matvec__(out, Afun!, x) = Afun!(out, x)
 
+"""
+    extract_tridiagonal_gappy(A::Tridiagonal, idx::AbstractVector{<:Integer})
+
+Given a tridiagonal matrix `A` and a strictly increasing index set `idx`,
+return the submatrix A[idx, idx] represented as (dl, d, du).
+
+- d[k]        = A.d[idx[k]]
+- dl[k] / du[k] = A.dl[idx[k]] / A.du[idx[k]]  if idx[k+1] == idx[k] + 1, else 0
+
+This preserves a band-1 representation even when `idx` has gaps:
+off-diagonal entries corresponding to non-consecutive original indices are zero.
+"""
+function extract_tridiagonal_gappy(A::Tridiagonal, idx::AbstractVector{<:Integer})
+  @assert issorted(idx) "idx must be strictly increasing (sorted)."
+  m = length(idx)
+  @assert m ≥ 1 "idx cannot be empty."
+
+  # 主对角
+  sub_d  = A.d[idx]
+
+  # 上下对角（长度 m-1）
+  sub_dl = zeros(eltype(A.d), m - 1)
+  sub_du = zeros(eltype(A.d), m - 1)
+
+  @inbounds for k in 1:m-1
+    i = idx[k]
+    j = idx[k+1]
+    if j == i + 1
+      # 原索引相邻，才能继承非零的三对角元素
+      sub_du[k] = A.du[i]  # A[i, i+1]
+      sub_dl[k] = A.dl[i]  # A[i+1, i]
+    else
+      # 跳跃索引 => 该位置的上下对角为 0
+      sub_du[k] = zero(eltype(A.d))
+      sub_dl[k] = zero(eltype(A.d))
+    end
+  end
+  return sub_dl, sub_d, sub_du
+end

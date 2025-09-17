@@ -1,6 +1,7 @@
 module QBSolvers
 
 using LinearAlgebra, SparseArrays, Statistics, Random
+using Printf
 using IterativeSolvers
 using Base.Threads
 using LoopVectorization
@@ -45,5 +46,8 @@ export NQUB_nqp_TwoMat
 
 include("lasso.jl")
 export lasso_prox_newton_woodbury!, fista_l1_ball, projected_newton_l1!
+
+include("tv.jl")
+export lsq_box_QUB_woodbury!, prox_wTV_MM
 
 end # module
