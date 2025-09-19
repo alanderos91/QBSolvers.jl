@@ -11,7 +11,7 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 
 using QBSolvers
-using LinearAlgebra, StatsBase, Random, LowRankApprox
+using LinearAlgebra, StatsBase, Random, StableRNGs
 using IterativeSolvers, NonNegLeastSquares, GLMNet
 using BenchmarkTools, DataFrames, PrettyTables
 #
@@ -192,18 +192,20 @@ end
 #
 # Benchmark Script
 #
-function main()
+function main(seed)
   #
   # Simulate data for problem instances.
   #
-  Random.seed!(1234)
-  (n, p, r, tol) = (10000, 2000, 1, 1e-6); # cases, parameters, and tolerance
-  X = randn(n, p); # design matrix
-  StandardizeColumns!(X);
-  X = [ones(n) ./ sqrt(n) X]; # include intercept
-  p = p + 1;
-  beta = randn(p); # regression coefficients
-  y = X * beta + randn(n); # responses with noise
+  RNG = StableRNG(seed) # for this script
+  Random.seed!(seed)    # for any QBSolvers code
+  
+  (n, p, r, tol) = (10000, 2000, 1, 1e-6) # cases, parameters, hyperparameter, and tolerance
+  X = randn(RNG, n, p)                    # design matrix
+  StandardizeColumns!(X)
+  X = [ones(n) ./ sqrt(n) X]              # include intercept
+  p = p + 1
+  beta = randn(RNG, p)                    # regression coefficients
+  y = X * beta + randn(RNG, n)            # responses with noise
   #
   # Closure for DQUB + CD code to fix parameters
   #
@@ -351,5 +353,10 @@ end
 #
 # Runtime
 #
-main()
+if isempty(ARGS)
+  main(1234)
+else
+  seed = parse(Int, ARGS[1])
+  main(seed)
+end
 

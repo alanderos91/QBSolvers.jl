@@ -14,7 +14,7 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 
 using QBSolvers
-using Distributions, LinearAlgebra, Statistics, Random
+using Distributions, LinearAlgebra, Statistics, Random, StableRNGs
 using BenchmarkTools, DataFrames, PrettyTables
 
 BLAS.set_num_threads(10)
@@ -26,8 +26,9 @@ BLAS.get_config() |> display; println()
 
 function main(n, p, λ, seed, ρ)
   # benchmark parameters
-  N = 1000 # number of @benchmark samples
-  Random.seed!(seed)
+  N = 1000              # number of @benchmark samples
+  RNG = StableRNG(seed) # this benchmark script
+  Random.seed!(seed)    # for QBSolvers code
   tscale = 1e-9 # report time in seconds
 
   results = DataFrame(
@@ -57,9 +58,9 @@ function main(n, p, λ, seed, ρ)
   # create problem instance
   Σ = [ρ^abs(i-j) for i in 1:p, j in 1:p];
   cholΣ = cholesky!(Symmetric(Σ))
-  A = randn(n, p) * cholΣ.L
-  x = randn(p)
-  b = A*x + 1/sqrt(p) .* randn(n)
+  A = randn(RNG, n, p) * cholΣ.L
+  x = randn(RNG, p)
+  b = A*x + 1/sqrt(p) .* randn(RNG, n)
 
   println("seed:    ", seed)
   println("size(A): ", size(A, 1), " × ", size(A, 2))

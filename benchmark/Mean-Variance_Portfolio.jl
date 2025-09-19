@@ -11,7 +11,7 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 
 using QBSolvers, JuMP, Gurobi, MathOptInterface
-using LinearAlgebra, Statistics
+using LinearAlgebra, Statistics, Random
 using BenchmarkTools, CSV, DataFrames, PrettyTables
 
 #
@@ -80,7 +80,8 @@ end
 #
 # Benchmark Script
 #
-function main()
+function main(seed)
+  Random.seed!(seed)  # for QBSolvers code
   #
   # Load the S&P 500 data
   #
@@ -117,12 +118,12 @@ function main()
   b3 = @benchmark mean_variance_mle($μ, $Σ, $r, tol = $tol, 
     standard=true, duality=true, use_nesterov=true, verbose=false)
 
-  b4 = @benchmark mean_variance_optimization($μ, $Σ, $r, tol = $tol)
+  # b4 = @benchmark mean_variance_optimization($μ, $Σ, $r, tol = $tol)
 
   s1 = extract_stats(b1)
   s2 = extract_stats(b2)
   s3 = extract_stats(b3)
-  s4 = extract_stats(b4)
+  # s4 = extract_stats(b4)
 
   w1, var1, ret1, risk1, iter1 = mean_variance_mle(μ, Σ, r, tol = tol, 
     standard=false, duality=false, use_nesterov=true, verbose=false)
@@ -133,7 +134,7 @@ function main()
   w3, var3, ret3, risk3, iter3 = mean_variance_mle(μ, Σ, r, tol = tol, 
     standard=true, duality=true, use_nesterov=true, verbose=false)
   
-  w4, var4, ret4, risk4, iter4 = mean_variance_optimization(μ, Σ, r, tol = tol)
+  # w4, var4, ret4, risk4, iter4 = mean_variance_optimization(μ, Σ, r, tol = tol)
 
   #
   # Assemble results into 'pretty tables'
@@ -142,7 +143,7 @@ function main()
     ("QUB",     s1.mean, iter1, length(w1), sum(w1 .== 0), ret1, risk1),
     ("SQUB",    s2.mean, iter2, length(w2), sum(w2 .== 0), ret2, risk2),
     ("Duality", s3.mean, iter3, length(w3), sum(w3 .== 0), ret3, risk3),
-    ("Gurobi",  s4.mean, iter4, length(w4), sum(w4 .== 0), ret4, risk4),
+    # ("Gurobi",  s4.mean, iter4, length(w4), sum(w4 .== 0), ret4, risk4),
   ]
   header = ["Method", "Time(ms)", "Iterations", "# of Params", "Zeros", "Return", "Risk"]
   results_df = DataFrame([Symbol(h) => [r[i] for r in rows] for (i, h) in enumerate(header)])
@@ -179,5 +180,10 @@ end
 #
 # Runtime
 #
-main()
+if isempty(ARGS)
+  main(1234)
+else
+  seed = parse(Int, ARGS[1])
+  main(seed)
+end
 

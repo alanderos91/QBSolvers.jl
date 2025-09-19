@@ -11,7 +11,7 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 
 using QBSolvers
-using Distributions, LinearAlgebra, Statistics, SparseArrays, Random
+using Distributions, LinearAlgebra, Statistics, SparseArrays, Random, StableRNGs
 using BenchmarkTools, CSV, DataFrames, PrettyTables
 QBLS = QBSolvers
 #
@@ -162,15 +162,15 @@ end
 #
 # Benchmark Script
 #
-function main(; σ=10, seed=45, s=0.05)
+function main(seed; σ=10, s=0.05)
   n = 1000
   p = n - 1
-  Random.seed!(seed)
-
-  βtrue = sprand(p, s)              # sparse signal
+  RNG = StableRNG(seed)     # for this script
+  Random.seed!(seed)        # for QBSolvers code
+  βtrue = sprand(RNG, p, s) # sparse signal
   D = diffmat(n)
   X = transpose(D)
-  y = X * βtrue + σ * randn(n)
+  y = X * βtrue + σ * randn(RNG, n)
 
   # Run the benchmarks
   t_scales = [0.5, 1.0, 5.0, 10.0, 20.0]
@@ -208,5 +208,10 @@ end
 #
 # Runtime
 #
-main(σ=10, seed=45, s=0.05)
+if isempty(ARGS)
+  main(1234; σ=10, s=0.05)
+else
+  seed = parse(Int, ARGS[1])
+  main(seed; σ=10, s=0.05)
+end
 

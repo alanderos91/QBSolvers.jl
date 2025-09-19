@@ -11,7 +11,7 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 
 using QBSolvers
-using Distributions, LinearAlgebra, Statistics, SparseArrays, Random
+using Distributions, LinearAlgebra, Statistics, SparseArrays, Random, StableRNGs
 using BenchmarkTools, CSV, DataFrames, PrettyTables
 QBLS = QBSolvers
 #
@@ -35,25 +35,23 @@ extract_sec_stats(b::BenchmarkTools.Trial) = (
 #
 # Benchmark Script
 #
-function main(seed=45)
+function main(seed)
   #
   # Create problem instance
   #
-  Random.seed!(seed)
+  RNG = StableRNG(seed) # for this script
+  Random.seed!(seed)    # for QBSolvers code
   n = 1000
   p = 10n
   covM = [0.4^abs(i-j) for i in 1:p, j in 1:p]
   d = MvNormal(zeros(p), covM)
-  X = Transpose(rand(d, n))
+  X = Transpose(rand(RNG, d, n))
   s = 0.05          # density of βtrue (≈5% nonzeros)
   σ = 0.1
   t_scale = 0.1
 
   # 1) design + ground-truth
-  βtrue = sprand(p, s)              # SparseVector length p, density s
-  # d = TDist(1.5)
-  # truth =  X * βtrue .+ 1
-  # y = truth + rand(d, n) .- Statistics.quantile(d,0.5)
+  βtrue = sprand(RNG, p, s)              # SparseVector length p, density s
   X = Matrix(X)
 
   # 2) normalize X column-wise: (X[:,j] - mean) / std, with std==0 -> 1
@@ -68,7 +66,7 @@ function main(seed=45)
   end
 
   # 3) response (build AFTER normalization)
-  y = X * βtrue + σ * randn(n)
+  y = X * βtrue + σ * randn(RNG, n)
 
   # 4) ℓ1-ball radius (based on the true coefficients)
   t = t_scale * sum(abs, βtrue)
@@ -182,5 +180,10 @@ end
 #
 # Runtime
 #
-main()
+if isempty(ARGS)
+  main(1234)
+else
+  seed = parse(Int, ARGS[1])
+  main(seed)
+end
 

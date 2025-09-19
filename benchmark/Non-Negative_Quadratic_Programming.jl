@@ -12,7 +12,7 @@ Pkg.instantiate()
 
 using QBSolvers, NonNegLeastSquares, GoldfarbIdnaniSolver
 using NonNegLeastSquares: pivot_cache
-using Distributions, LinearAlgebra, Statistics, Random
+using Distributions, LinearAlgebra, Statistics, Random, StableRNGs
 using BenchmarkTools, CSV, DataFrames, PrettyTables
 
 #
@@ -70,22 +70,23 @@ end
 #
 # Benchmark Script
 #
-function main()
+function main(seed)
   #
   # Create problem instance
   #
-  Random.seed!(123)
+  RNG = StableRNG(seed) # for this script
+  Random.seed!(seed)    # for QBSolvers code
   p = 1000
   n = 10p
   
   covM = [0.4^abs(i-j) for i in 1:p, j in 1:p]
   
   d = MvNormal(zeros(p), covM)
-  X = Transpose(rand(d, n))
+  X = Transpose(rand(RNG, d, n))
   β = 0.1ones(p)
   d = TDist(1.5)
   truth =  X * β .+ 1
-  y = truth + rand(d, n) .- Statistics.quantile(d,0.5)
+  y = truth + rand(RNG, d, n) .- Statistics.quantile(d,0.5)
   X = Matrix(X)
   
   A = X'X
@@ -186,5 +187,10 @@ end
 #
 # Runtime
 #
-main()
+if isempty(ARGS)
+  main(1234)
+else
+  seed = parse(Int, ARGS[1])
+  main(seed)
+end
 

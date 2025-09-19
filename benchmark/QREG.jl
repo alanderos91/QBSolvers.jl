@@ -14,7 +14,7 @@ Pkg.activate(pwd())
 Pkg.instantiate()
 
 using QBSolvers
-using LinearAlgebra, Statistics, Random, Distributions
+using LinearAlgebra, Statistics, Random, Distributions, StableRNGs
 using BenchmarkTools, DataFrames, PrettyTables
 import MMDeweighting
 using RCall
@@ -43,7 +43,7 @@ end
 function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false)
   @assert n >= p
 
-  N = 100      # number of @benchmark samples
+  N = 1000      # number of @benchmark samples
   tscale = 1e-9 # report time in seconds
   rtol = 1e-8   # change in objective, relative to previous value
   gtol = 1e-5
@@ -61,7 +61,7 @@ function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false
   )
 
   # create problem instance
-  getprob = let n=n, p=p, ρ=ρ, standardize=standardize
+  getprob = let n=n, p=p, ρ=ρ, q=q, standardize=standardize, intercept=intercept
     function(rng)
       if iszero(ρ)
         Σ = Matrix{Float64}(I, p, p)
@@ -93,7 +93,9 @@ function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false
       return (y, _X, X)
     end
   end
-  y, _X, X = getprob(Xoshiro(seed))
+  RNG = StableRNG(seed)
+  Random.seed!(seed)
+  y, _X, X = getprob(RNG)
   h = QBSolvers.default_bandwidth(_X)
 
   println("seed:    ", seed)
@@ -121,7 +123,7 @@ function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false
 
   # MMDeweighting
   β̂, _, iter, _ = MMDeweighting.FastQR(X, y, q; tol=rtol, h=h, verbose=false)
-  benchMMD = @benchmark MMDeweighting.FastQR(prob[3], prob[1], $q; tol=$rtol, h=$h, verbose=false) samples=N setup=(rng = Xoshiro($seed); prob = $getprob(rng);)
+  benchMMD = @benchmark MMDeweighting.FastQR($X, $y, $q; tol=$rtol, h=$h, verbose=false) samples=N
   r = y - X*β̂
   statsMMD = (;
     iterations=iter,
@@ -134,7 +136,7 @@ function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false
 
   # conquer
   β̂, r, iter = solve_QREG_conquer(_X, y, q, h, gtol)
-  benchCQR = @benchmark solve_QREG_conquer($_X, $y, $q, $h, $gtol) samples=N setup=(rng = Xoshiro($seed); prob = $getprob(rng);)
+  benchCQR = @benchmark solve_QREG_conquer($_X, $y, $q, $h, $gtol) samples=N
   statsCQR = (;
     iterations=iter,
     xnorm=norm(β̂),
@@ -147,8 +149,8 @@ function main(n, p, q, seed, ρ; standardize=false, intercept=false, accel=false
   # QUB closures
   QUB = let N=N, q=q, h=h, rtol=rtol, accel=accel, seed=seed
     function(X, y, version, normalize, alg)
-      _, _, stats = solve_QREG_lbfgs(X, y; q=q, h=h, rtol=rtol, version=version, normalize=normalize, accel=accel, memory=20)
-      bench = @benchmark solve_QREG_lbfgs($X, $y; q=$q, h=$h, rtol=$rtol, version=$version, normalize=$normalize, accel=$accel, memory=20) samples=N setup=(rng = Xoshiro($seed); prob = $getprob(rng);)
+      _, _, stats = solve_QREG_lbfgs(X, y; q=q, h=h, rtol=rtol, version=version, normalize=normalize, accel=accel, memory=10)
+      bench = @benchmark solve_QREG_lbfgs($X, $y; q=$q, h=$h, rtol=$rtol, version=$version, normalize=$normalize, accel=$accel, memory=10) samples=N
       record!(alg, bench, stats)
     end
   end
